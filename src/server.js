@@ -27,10 +27,12 @@ app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'Zooglot.DB', mock_db: config.mockDb,
 }));
 
-// ---- frontend (static) ----
-const FRONTEND = path.join(__dirname, '..', '..', 'frontend');
-app.use(express.static(FRONTEND));
-app.get('/', (req, res) => res.sendFile(path.join(FRONTEND, 'index.html')));
+// ---- frontend (static) — only in local dev or if explicitly enabled ----
+if (process.env.SERVE_FRONTEND !== 'false' && config.mockDb) {
+  const FRONTEND = path.join(__dirname, '..', '..', 'frontend');
+  app.use(express.static(FRONTEND));
+  app.get('/', (req, res) => res.sendFile(path.join(FRONTEND, 'index.html')));
+}
 
 // ---- errors ----
 app.use((err, req, res, next) => {
