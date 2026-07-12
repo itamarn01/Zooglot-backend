@@ -29,12 +29,50 @@ router.patch('/profile', async (req, res) => {
 router.get('/team', async (req, res) => {
   const profiles = await db.list('profiles', { orderBy: 'created_at' });
   res.json({
-    team: profiles.map(p => ({ id: p.id, email: p.email, full_name: p.full_name, avatar_url: p.avatar_url, role: p.role })),
+    team: profiles.map(p => ({
+      id: p.id, email: p.email, full_name: p.full_name, avatar_url: p.avatar_url,
+      role: p.role, email_verified: !!p.email_verified, created_at: p.created_at,
+    })),
   });
+});
+
+// edit a team member (name / role) — admin only, can't demote yourself (avoid lockout)
+router.patch('/team/:id', requireAdmin, async (req, res) => {
+  const target = await db.get('profiles', req.params.id);
+  if (!target) return res.status(404).json({ error: 'משתמש לא נמצא' });
+  const patch = {};
+  if (typeof req.body?.full_name === 'string' && req.body.full_name.trim()) patch.full_name = req.body.full_name.trim();
+  if (req.body?.role && ['admin', 'member'].includes(req.body.role)) {
+    if (target.id === req.user.id && req.body.role !== 'admin') {
+      return res.status(400).json({ error: 'אי אפשר להסיר לעצמך הרשאת אדמין' });
+    }
+    patch.role = req.body.role;
+  }
+  const p = await db.update('profiles', target.id, patch);
+  res.json({ member: { id: p.id, email: p.email, full_name: p.full_name, avatar_url: p.avatar_url, role: p.role, email_verified: !!p.email_verified } });
+});
+
+// remove a team member — admin only, can't delete yourself
+router.delete('/team/:id', requireAdmin, async (req, res) => {
+  if (req.params.id === req.user.id) return res.status(400).json({ error: 'אי אפשר למחוק את המשתמש שלך' });
+  const target = await db.get('profiles', req.params.id);
+  if (!target) return res.status(404).json({ error: 'משתמש לא נמצא' });
+  await db.remove('profiles', req.params.id);
+  res.json({ ok: true });
 });
 
 router.get('/invitations', requireAdmin, async (req, res) => {
   res.json({ invitations: await db.list('invitations', { orderBy: 'created_at', asc: false }) });
+});
+
+// resend an existing invitation email
+router.post('/invitations/:id/resend', requireAdmin, async (req, res) => {
+  const invite = await db.get('invitations', req.params.id);
+  if (!invite) return res.status(404).json({ error: 'הזמנה לא נמצאה' });
+  if (invite.accepted_at) return res.status(400).json({ error: 'ההזמנה כבר מומשה' });
+  const link = `${config.frontendUrl}/#invite=${invite.token}`;
+  await email.invitation(invite.email, link, req.user.full_name);
+  res.json({ ok: true, link });
 });
 
 router.post('/invitations', requireAdmin, async (req, res) => {

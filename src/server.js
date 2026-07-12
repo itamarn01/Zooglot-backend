@@ -11,6 +11,7 @@ app.use(express.json({ limit: '15mb' })); // signatures/avatars arrive as data U
 // ---- API ----
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/leads', require('./routes/leads'));
+app.use('/api/import', require('./routes/import'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/packages', require('./routes/packages'));
 app.use('/api/contracts', require('./routes/contracts').authed);
