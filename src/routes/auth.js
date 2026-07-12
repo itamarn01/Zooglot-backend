@@ -123,7 +123,7 @@ router.post('/forgot', async (req, res) => {
   if (profile) {
     const token = crypto.randomBytes(24).toString('hex');
     await issueCode(emailAddr, 'reset', 60, token);
-    await email.passwordReset(emailAddr, `${config.appUrl}/#reset=${token}&email=${encodeURIComponent(emailAddr)}`);
+    await email.passwordReset(emailAddr, `${config.frontendUrl}/#reset=${token}&email=${encodeURIComponent(emailAddr)}`);
   }
   res.json({ ok: true });
 });

@@ -139,7 +139,7 @@ authed.post('/:id/send', async (req, res) => {
   const lead = await db.get('leads', c.lead_id);
   const token = c.client_token || crypto.randomBytes(16).toString('hex');
   const updated = await db.update('contracts', c.id, { status: 'sent', client_token: token });
-  const link = `${config.appUrl}/portal.html?t=${token}`;
+  const link = `${config.frontendUrl}/portal.html?t=${encodeURIComponent(token)}`;
   const to = req.body?.email || lead?.email;
   if (to) await email.contractReady(to, link, lead?.contact_name || lead?.name);
   await db.insert('lead_updates', {

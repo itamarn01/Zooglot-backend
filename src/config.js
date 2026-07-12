@@ -4,7 +4,12 @@ const filled = (v) => Boolean(v && v !== '...' && v.trim() !== '');
 
 const config = {
   port: Number(process.env.PORT || 4000),
+  // appUrl: this backend's own address — only correct for API/webhook links.
   appUrl: process.env.APP_URL || `http://localhost:${process.env.PORT || 4000}`,
+  // frontendUrl: where the SPA (and public pages like form.html/portal.html)
+  // actually live. In prod this is the Vercel URL, not the Railway backend —
+  // falls back to appUrl for local dev where both are served from one origin.
+  frontendUrl: process.env.FRONTEND_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 4000}`,
   jwtSecret: process.env.JWT_SECRET || 'zooglot-dev-secret',
   webhookSecret: process.env.WEBHOOK_SECRET || 'dev-webhook-secret',
 

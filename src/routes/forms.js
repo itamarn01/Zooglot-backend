@@ -59,7 +59,7 @@ authed.get('/', async (req, res) => {
 authed.post('/', async (req, res) => {
   const { name, intro_html, logo_url, colors, fields, language } = req.body || {};
   if (!name) return res.status(400).json({ error: 'שם הטופס הוא שדה חובה' });
-  const slug = `${name.replace(/[^\w֐-׿]+/g, '-').slice(0, 30)}-${crypto.randomBytes(4).toString('hex')}`;
+  const slug = `${name.replace(/[^\w֐-׿]+/g, '-').slice(0, 30)}-${crypto.randomBytes(8).toString('hex')}`;
   const form = await db.insert('lead_forms', {
     name,
     slug,
@@ -90,7 +90,8 @@ authed.delete('/:id', async (req, res) => {
 });
 
 function formLinks(form) {
-  const publicUrl = `${config.appUrl}/form.html?f=${form.slug}`;
+  // form.html is a static page served by the frontend (Vercel), not this API — use frontendUrl.
+  const publicUrl = `${config.frontendUrl}/form.html?f=${encodeURIComponent(form.slug)}`;
   return {
     public_url: publicUrl,
     webhook_url: `${config.appUrl}/api/public/forms/${form.slug}/submit`,

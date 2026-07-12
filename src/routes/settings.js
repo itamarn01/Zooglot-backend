@@ -46,7 +46,7 @@ router.post('/invitations', requireAdmin, async (req, res) => {
   const invite = await db.insert('invitations', {
     email: emailAddr, token, invited_by: req.user.id, accepted_at: null,
   });
-  const link = `${config.appUrl}/#invite=${token}`;
+  const link = `${config.frontendUrl}/#invite=${token}`;
   await email.invitation(emailAddr, link, req.user.full_name);
   res.status(201).json({ invitation: invite, link });
 });

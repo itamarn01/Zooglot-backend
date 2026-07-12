@@ -210,7 +210,7 @@ create table if not exists lead_forms (
   intro_html text,                          -- free text above the form
   logo_url text,
   colors jsonb not null default '{"primary":"#87cedf","bg":"#0e1b20","text":"#eef7fa"}',
-  fields jsonb not null default '[]',       -- [{key,label,type,required,options}]
+  fields jsonb not null default '[]',       -- [{key,label,type,required,options,description}]
   language text not null default 'he' check (language in ('he','en')),
   active boolean not null default true,
   created_by uuid references profiles(id),
