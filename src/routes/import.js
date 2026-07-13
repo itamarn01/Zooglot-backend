@@ -217,7 +217,9 @@ router.post('/leads', async (req, res) => {
   };
 
   let created = 0, updated = 0, skipped = 0, failed = 0;
-  for (const row of rows) {
+  const errors = []; // up to 20 concrete reasons, so failures are never a silent count
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     const data = {};
     let notes = null;
     for (const [col, key] of Object.entries(mapping)) {
@@ -227,7 +229,11 @@ router.post('/leads', async (req, res) => {
       if (key === 'notes') { notes = row[col]; continue; }
       data[key] = val;
     }
-    if (!data.name) { failed++; continue; }
+    if (!data.name) {
+      failed++;
+      if (errors.length < 20) errors.push({ row: i + 1, reason: 'שדה "שם" ריק אחרי המיפוי' });
+      continue;
+    }
 
     try {
       const match = (match_strategy !== 'add') ? findMatch(data[match_field]) : null;
@@ -252,9 +258,12 @@ router.post('/leads', async (req, res) => {
           body: `📥 יובא מאקסל: ${String(notes).trim()}`,
         });
       }
-    } catch { failed++; }
+    } catch (e) {
+      failed++;
+      if (errors.length < 20) errors.push({ row: i + 1, name: data.name, reason: e.message || 'שגיאה לא ידועה' });
+    }
   }
-  res.json({ created, updated, skipped, failed, total: rows.length });
+  res.json({ created, updated, skipped, failed, total: rows.length, errors });
 });
 
 // ---- import a Monday "Updates" export into lead update threads ----
@@ -277,25 +286,32 @@ router.post('/updates', async (req, res) => {
     return leads.find(l => norm(l[match_field]) === s) || null;
   };
 
-  let imported = 0, unmatched = 0, empty = 0;
+  let imported = 0, unmatched = 0, empty = 0, failed = 0;
   const missing = new Set();
-  for (const row of rows) {
+  const errors = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     const content = String(row[mapping.content] ?? '').trim();
     if (!content) { empty++; continue; }
     const lead = leadBy(row[mapping.match]);
     if (!lead) { unmatched++; missing.add(String(row[mapping.match] ?? '').trim()); continue; }
     const author = mapping.author ? profileByName(row[mapping.author]) : null;
     const createdAt = mapping.date ? toDateStr(row[mapping.date]) : null;
-    await db.insert('lead_updates', {
-      lead_id: lead.id,
-      author_id: author ? author.id : null,
-      kind: 'note',
-      body: content,
-      ...(createdAt ? { created_at: new Date(createdAt).toISOString() } : {}),
-    });
-    imported++;
+    try {
+      await db.insert('lead_updates', {
+        lead_id: lead.id,
+        author_id: author ? author.id : null,
+        kind: 'note',
+        body: content,
+        ...(createdAt ? { created_at: new Date(createdAt).toISOString() } : {}),
+      });
+      imported++;
+    } catch (e) {
+      failed++;
+      if (errors.length < 20) errors.push({ row: i + 1, reason: e.message || 'שגיאה לא ידועה' });
+    }
   }
-  res.json({ imported, unmatched, empty, total: rows.length, missing: [...missing].slice(0, 20) });
+  res.json({ imported, unmatched, empty, failed, total: rows.length, missing: [...missing].slice(0, 20), errors });
 });
 
 module.exports = router;

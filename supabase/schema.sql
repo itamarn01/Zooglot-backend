@@ -83,8 +83,8 @@ create table if not exists leads (
   lost_reason text,                        -- למה לא?
   lost_competitor text,                    -- מתחרה שזכה
   -- ingestion
-  source text not null default 'manual'    -- manual/form/webhook/whatsapp/voice
-    check (source in ('manual','form','webhook','whatsapp','voice')),
+  source text not null default 'manual'    -- manual/form/webhook/whatsapp/voice/import
+    check (source in ('manual','form','webhook','whatsapp','voice','import')),
   source_ref text,                         -- form id / wa chat id / monday item id
   -- bookkeeping
   created_by uuid references profiles(id),
