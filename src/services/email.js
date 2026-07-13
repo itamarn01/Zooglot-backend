@@ -46,4 +46,14 @@ module.exports = {
   contractReady: (to, link, leadName) =>
     send(to, `החוזה שלכם מוכן לחתימה — KOLOT`,
       shell('החוזה מוכן', `<p>שלום ${leadName || ''},</p><p>החוזה שלכם מול להקת קולות מוכן לצפייה ולחתימה דיגיטלית:</p><p><a href="${link}" style="color:#87cedf;">לצפייה בחוזה ולחתימה</a></p>`)),
+  reminder: (to, lead, message) => {
+    const details = [
+      lead.event_date && `תאריך האירוע: ${lead.event_date}`,
+      lead.event_location && `מיקום: ${lead.event_location}`,
+      lead.phone1 && `טלפון: ${lead.phone1}`,
+    ].filter(Boolean).join('<br>');
+    return send(to, `⏰ תזכורת: ${lead.name}`,
+      shell(`תזכורת — ${lead.name}`,
+        `<p style="font-size:17px;">${message}</p>${details ? `<p style="color:#7fa3ad;">${details}</p>` : ''}`));
+  },
 };

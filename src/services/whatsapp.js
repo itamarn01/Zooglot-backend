@@ -74,4 +74,21 @@ async function sendMessage(chatId, text) {
   return client.sendText(chatId, text);
 }
 
-module.exports = { start, sendMessage, handleIncoming };
+// "0501234567" / "+972501234567" / "972501234567" -> "972501234567@c.us"
+function toChatId(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) throw new Error('מספר טלפון ריק');
+  const intl = digits.startsWith('972') ? digits : digits.replace(/^0/, '972');
+  return `${intl}@c.us`;
+}
+
+async function sendToNumber(phone, text) {
+  if (!client) {
+    throw new Error('וואטסאפ אינו מחובר — יש להפעיל ENABLE_WHATSAPP=true בשרת');
+  }
+  return client.sendText(toChatId(phone), text);
+}
+
+const isReady = () => !!client;
+
+module.exports = { start, sendMessage, sendToNumber, toChatId, isReady, handleIncoming };

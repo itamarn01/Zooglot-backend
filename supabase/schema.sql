@@ -15,6 +15,7 @@ create table if not exists profiles (
   email text not null unique,
   full_name text not null default '',
   avatar_url text,
+  phone text,                               -- for WhatsApp reminders
   role text not null default 'member' check (role in ('admin','member')),
   password_hash text,
   email_verified boolean not null default false,
@@ -137,6 +138,23 @@ create table if not exists lead_updates (
     check (kind in ('note','system')),
   created_at timestamptz not null default now()
 );
+
+-- reminders per lead — emailed or WhatsApp'd to whoever handles the event
+create table if not exists reminders (
+  id uuid primary key default uuid_generate_v4(),
+  lead_id uuid not null references leads(id) on delete cascade,
+  channel text not null check (channel in ('email','whatsapp')),
+  remind_at timestamptz not null,
+  message text,
+  recipient_id uuid references profiles(id),  -- defaults to the lead owner (בטיפול)
+  status text not null default 'pending'
+    check (status in ('pending','sent','failed','cancelled')),
+  sent_at timestamptz,
+  error text,
+  created_by uuid references profiles(id),
+  created_at timestamptz not null default now()
+);
+create index if not exists reminders_due_idx on reminders (status, remind_at);
 
 -- ---------- products (מוצרים) ----------
 create table if not exists products (
@@ -288,6 +306,7 @@ alter table profiles enable row level security;
 alter table leads enable row level security;
 alter table lead_contacts enable row level security;
 alter table lead_updates enable row level security;
+alter table reminders enable row level security;
 alter table products enable row level security;
 alter table packages enable row level security;
 alter table package_items enable row level security;
@@ -308,7 +327,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'profiles','leads','lead_contacts','lead_updates','products','packages',
+    'profiles','leads','lead_contacts','lead_updates','reminders','products','packages',
     'package_items','contracts','management_signatures','lead_forms',
     'form_submissions','voice_notes','calendar_links','calendar_events',
     'whatsapp_messages','invitations','competitors']

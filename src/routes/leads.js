@@ -140,6 +140,56 @@ router.post('/:id/updates', async (req, res) => {
   res.status(201).json({ update: { ...update, author_name: req.user.full_name || req.user.email } });
 });
 
+// ---- reminders (email / whatsapp to whoever handles the event) ----
+router.get('/:id/reminders', async (req, res) => {
+  const reminders = await db.list('reminders', {
+    filters: { lead_id: req.params.id }, orderBy: 'remind_at', asc: true,
+  });
+  const profiles = await db.list('profiles', {});
+  const names = Object.fromEntries(profiles.map(p => [p.id, p.full_name || p.email]));
+  res.json({
+    reminders: reminders.map(r => ({ ...r, recipient_name: names[r.recipient_id] || null })),
+  });
+});
+
+router.post('/:id/reminders', async (req, res) => {
+  const lead = await db.get('leads', req.params.id);
+  if (!lead) return res.status(404).json({ error: 'ליד לא נמצא' });
+
+  const { channel, remind_at, message, recipient_id } = req.body || {};
+  if (!['email', 'whatsapp'].includes(channel)) {
+    return res.status(400).json({ error: 'יש לבחור ערוץ: מייל או וואטסאפ' });
+  }
+  if (!remind_at || isNaN(new Date(remind_at))) {
+    return res.status(400).json({ error: 'יש לבחור תאריך ושעה לתזכורת' });
+  }
+  const recipient = recipient_id || lead.owner_id;
+  if (!recipient) {
+    return res.status(400).json({ error: 'אין איש צוות מטפל לליד — בחרו נמען לתזכורת' });
+  }
+  const person = await db.get('profiles', recipient);
+  if (!person) return res.status(400).json({ error: 'איש הצוות לא נמצא' });
+  if (channel === 'whatsapp' && !person.phone) {
+    return res.status(400).json({ error: `ל-${person.full_name || person.email} אין מספר וואטסאפ בפרופיל (הגדרות → פרופיל)` });
+  }
+
+  const reminder = await db.insert('reminders', {
+    lead_id: lead.id,
+    channel,
+    remind_at: new Date(remind_at).toISOString(),
+    message: (message || '').trim() || null,
+    recipient_id: recipient,
+    status: 'pending',
+    created_by: req.user.id,
+  });
+  res.status(201).json({ reminder: { ...reminder, recipient_name: person.full_name || person.email } });
+});
+
+router.delete('/:id/reminders/:reminderId', async (req, res) => {
+  await db.remove('reminders', req.params.reminderId);
+  res.json({ ok: true });
+});
+
 // ---- merge duplicates ----
 // body: { primary_id, duplicate_id, resolutions: { field: chosenValue } }
 router.post('/merge', async (req, res) => {

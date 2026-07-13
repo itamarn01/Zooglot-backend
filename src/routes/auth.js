@@ -8,7 +8,7 @@ const { sign, requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 const publicProfile = (p) => ({
-  id: p.id, email: p.email, full_name: p.full_name,
+  id: p.id, email: p.email, full_name: p.full_name, phone: p.phone || null,
   avatar_url: p.avatar_url, role: p.role, email_verified: !!p.email_verified,
 });
 

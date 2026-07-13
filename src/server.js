@@ -48,4 +48,5 @@ app.listen(config.port, () => {
     console.log('   Demo login: itamar@kolotband.co.il / kolot123');
   }
   whatsapp.start().catch(e => console.warn('[whatsapp] failed to start:', e.message));
+  require('./services/reminders').start();
 });

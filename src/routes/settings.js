@@ -13,6 +13,7 @@ router.use(requireAuth);
 router.patch('/profile', async (req, res) => {
   const patch = {};
   if (req.body?.full_name) patch.full_name = req.body.full_name;
+  if (req.body?.phone !== undefined) patch.phone = req.body.phone || null; // WhatsApp reminders
   if (req.body?.avatar_url !== undefined) patch.avatar_url = req.body.avatar_url; // data URL or storage URL
   if (req.body?.new_password) {
     if (req.body.new_password.length < 8) return res.status(400).json({ error: 'סיסמה חייבת להיות באורך 8 תווים לפחות' });
@@ -22,7 +23,7 @@ router.patch('/profile', async (req, res) => {
     patch.password_hash = bcrypt.hashSync(req.body.new_password, 10);
   }
   const p = await db.update('profiles', req.user.id, patch);
-  res.json({ user: { id: p.id, email: p.email, full_name: p.full_name, avatar_url: p.avatar_url, role: p.role, email_verified: !!p.email_verified } });
+  res.json({ user: { id: p.id, email: p.email, full_name: p.full_name, phone: p.phone || null, avatar_url: p.avatar_url, role: p.role, email_verified: !!p.email_verified } });
 });
 
 // ---- team & invitations (invite-only registration) ----
@@ -31,7 +32,7 @@ router.get('/team', async (req, res) => {
   res.json({
     team: profiles.map(p => ({
       id: p.id, email: p.email, full_name: p.full_name, avatar_url: p.avatar_url,
-      role: p.role, email_verified: !!p.email_verified, created_at: p.created_at,
+      phone: p.phone || null, role: p.role, email_verified: !!p.email_verified, created_at: p.created_at,
     })),
   });
 });
