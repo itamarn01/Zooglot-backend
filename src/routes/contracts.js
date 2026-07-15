@@ -35,21 +35,69 @@ function computeFinalPrice(contract, pkg) {
   return total;
 }
 
-// substitute {{variables}} from the lead + extra fields into the body html
-function renderBody(contract, lead) {
-  let html = contract.body_html || '';
-  const vars = {
-    ...Object.fromEntries((contract.extra_fields || []).map(f => [f.key, f.value ?? ''])),
+// lead columns a client-editable field may write back to (whitelist — guards
+// against a poisoned contract writing arbitrary columns from the public portal)
+const CLIENT_WRITABLE_LEAD_FIELDS = [
+  'contact_name', 'email', 'phone1', 'phone2', 'event_date', 'event_location',
+  'event_type', 'id_number', 'address',
+];
+
+// resolve each fill-in field to its current value (lead-bound or contract-stored)
+function resolveFields(contract, lead) {
+  return (contract.fields || []).map(f => ({
+    id: f.id,
+    key: f.key,
+    label: f.label || f.key,
+    source: f.source === 'lead' ? 'lead' : 'custom',
+    lead_field: f.source === 'lead' ? f.lead_field || null : null,
+    client_editable: !!f.client_editable,
+    value: f.source === 'lead'
+      ? (lead && f.lead_field ? (lead[f.lead_field] ?? '') : '')
+      : (f.value ?? ''),
+  }));
+}
+
+// build the {{variable}} substitution map (lead fields + fill-in fields + legacy extras)
+function buildVars(contract, lead) {
+  const fieldVars = Object.fromEntries(resolveFields(contract, lead).map(f => [f.key, f.value]));
+  const extraVars = Object.fromEntries((contract.extra_fields || []).map(f => [f.key, f.value ?? '']));
+  return {
+    ...extraVars, ...fieldVars,
     name: lead?.name, contact_name: lead?.contact_name, event_date: lead?.event_date,
     event_location: lead?.event_location, event_type: lead?.event_type,
     email: lead?.email, phone1: lead?.phone1, phone2: lead?.phone2,
+    id_number: lead?.id_number, address: lead?.address,
     proposed_price: lead?.proposed_price, package_type: lead?.package_type,
     relation: lead?.relation, referrer: lead?.referrer,
     final_price: contract.final_price, base_price: contract.base_price,
     today: new Date().toISOString().slice(0, 10),
   };
-  return html.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) =>
-    vars[key] !== undefined && vars[key] !== null ? String(vars[key]) : `—`);
+}
+
+// substitute {{variables}} into any text/html
+function substitute(text, vars) {
+  return String(text || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) =>
+    vars[key] !== undefined && vars[key] !== null && vars[key] !== '' ? String(vars[key]) : '—');
+}
+
+function renderBody(contract, lead) {
+  return substitute(contract.body_html || '', buildVars(contract, lead));
+}
+
+// resolve proposal sections with their referenced product details for the portal
+async function resolveSections(sections) {
+  if (!Array.isArray(sections) || !sections.length) return [];
+  const products = await db.list('products', {});
+  const pMap = Object.fromEntries(products.map(p => [p.id, p]));
+  return sections.map(s => {
+    const p = s.product_id ? pMap[s.product_id] : null;
+    return {
+      id: s.id,
+      title: s.title || '',
+      details: s.details || '',
+      product: p ? { id: p.id, name: p.name, description: p.description } : null,
+    };
+  });
 }
 
 async function fullContract(contract) {
@@ -63,11 +111,22 @@ async function fullContract(contract) {
   if (contract.management_signature_id) {
     mgmtSig = await db.get('management_signatures', contract.management_signature_id);
   }
+  const vars = buildVars(contract, lead);
+  const header = contract.header || {};
   return {
     ...contract,
-    lead: lead && { id: lead.id, name: lead.name, contact_name: lead.contact_name, email: lead.email, event_date: lead.event_date, event_location: lead.event_location, phone1: lead.phone1 },
+    lead: lead && {
+      id: lead.id, name: lead.name, contact_name: lead.contact_name, email: lead.email,
+      event_date: lead.event_date, event_location: lead.event_location, event_type: lead.event_type,
+      phone1: lead.phone1, phone2: lead.phone2, id_number: lead.id_number, address: lead.address,
+      relation: lead.relation,
+    },
     package: pkg,
     rendered_body: renderBody(contract, lead),
+    rendered_header: { title: substitute(header.title, vars), intro: substitute(header.intro, vars) },
+    resolved_sections: await resolveSections(contract.sections),
+    client_fields: resolveFields(contract, lead),
+    require_client_signature: contract.require_client_signature !== false,
     management_signature: mgmtSig && { id: mgmtSig.id, name: mgmtSig.name, image_data: mgmtSig.image_data },
   };
 }
@@ -97,9 +156,13 @@ authed.post('/', async (req, res) => {
   const contract = await db.insert('contracts', {
     lead_id,
     package_id: pkg?.id || null,
-    title: title || `חוזה הופעה — ${lead.name}`,
+    title: title || `הצעת מחיר — ${lead.name}`,
     body_html: body_html || defaultTemplate(),
+    header: { title: `הצעת מחיר עבור ${lead.contact_name || lead.name}`, intro: defaultIntro() },
+    sections: [],
+    fields: [],
     extra_fields: [],
+    require_client_signature: true,
     selected_options: [],
     base_price: pkg?.base_price || 0,
     final_price: pkg?.base_price || 0,
@@ -115,7 +178,8 @@ authed.patch('/:id', async (req, res) => {
   const c = await db.get('contracts', req.params.id);
   if (!c) return res.status(404).json({ error: 'חוזה לא נמצא' });
   const patch = {};
-  for (const f of ['title', 'body_html', 'extra_fields', 'selected_options', 'status', 'management_signature_id']) {
+  for (const f of ['title', 'body_html', 'header', 'sections', 'fields', 'extra_fields',
+    'require_client_signature', 'selected_options', 'status', 'management_signature_id']) {
     if (f in (req.body || {})) patch[f] = req.body[f];
   }
   if ('package_id' in (req.body || {})) {
@@ -185,42 +249,80 @@ portal.patch('/:token/options', async (req, res) => {
   res.json({ contract: await fullContract(updated) });
 });
 
+// client edits fields the band marked as client-editable — writes straight back
+// to the CRM (lead-bound fields) or to the contract (custom fields)
+portal.patch('/:token/fields', async (req, res) => {
+  const c = await byToken(req, res);
+  if (!c) return;
+  if (c.client_signed_at) return res.status(400).json({ error: 'החוזה כבר נחתם ולא ניתן לשינוי' });
+  const edits = req.body?.values && typeof req.body.values === 'object' ? req.body.values : {};
+
+  const fields = c.fields || [];
+  const leadPatch = {};
+  const nextFields = fields.map((f) => {
+    if (!f.client_editable || !(f.key in edits)) return f;
+    const val = edits[f.key];
+    if (f.source === 'lead' && CLIENT_WRITABLE_LEAD_FIELDS.includes(f.lead_field)) {
+      leadPatch[f.lead_field] = val === '' ? null : val;
+      return f;
+    }
+    return { ...f, value: val };
+  });
+
+  await db.update('contracts', c.id, { fields: nextFields });
+  if (Object.keys(leadPatch).length && c.lead_id) {
+    await db.update('leads', c.lead_id, leadPatch);
+    await db.insert('lead_updates', {
+      lead_id: c.lead_id, author_id: null, kind: 'system',
+      body: `✏️ הלקוח עדכן פרטים בהצעה: ${Object.keys(leadPatch).join(', ')}`,
+    });
+  }
+  const updated = await db.get('contracts', c.id);
+  res.json({ contract: await fullContract(updated) });
+});
+
 // client digital signature
 portal.post('/:token/sign', async (req, res) => {
   const c = await byToken(req, res);
   if (!c) return;
   if (c.client_signed_at) return res.status(400).json({ error: 'החוזה כבר נחתם' });
   const { signature, signer_name } = req.body || {};
-  if (!signature || !signature.startsWith('data:image')) {
+  const sigRequired = c.require_client_signature !== false;
+  const hasSig = signature && signature.startsWith('data:image');
+  if (sigRequired && !hasSig) {
     return res.status(400).json({ error: 'נדרשת חתימה' });
   }
+  if (!signer_name || !signer_name.trim()) {
+    return res.status(400).json({ error: 'נדרש שם החותם/המאשר' });
+  }
   const updated = await db.update('contracts', c.id, {
-    client_signature: signature,
-    client_signer_name: signer_name || '',
+    client_signature: hasSig ? signature : null,
+    client_signer_name: signer_name.trim(),
     client_signed_at: new Date().toISOString(),
     status: c.management_signature_id ? 'completed' : 'client_signed',
   });
   if (c.lead_id) {
     await db.insert('lead_updates', {
       lead_id: c.lead_id, author_id: null, kind: 'system',
-      body: `✍️ הלקוח חתם על החוזה (${signer_name || 'ללא שם'}) · מחיר סופי: ₪${updated.final_price}`,
+      body: `${hasSig ? '✍️ הלקוח חתם על ההצעה' : '✅ הלקוח אישר את ההצעה'} (${signer_name.trim()}) · מחיר סופי: ₪${updated.final_price}`,
     });
     await db.update('leads', c.lead_id, { sale_status: 'win', close_date: new Date().toISOString().slice(0, 10) });
   }
   res.json({ contract: await fullContract(updated) });
 });
 
+function defaultIntro() {
+  return 'תודה שבחרתם לשקול את להקת קולות להופעה החיה באירוע שלכם. אנו גאים להיחשב לאירוע המיוחד הזה ובטוחים שנצליח ליצור עבורכם ועבור אורחיכם חוויה מוזיקלית בלתי נשכחת.';
+}
+
 function defaultTemplate() {
-  return `<h2 style="text-align:center">חוזה התקשרות — להקת קולות</h2>
-<p>שנחתם ביום {{today}} בין <b>להקת קולות</b> (להלן: "הלהקה") לבין <b>{{contact_name}}</b> (להלן: "הלקוח").</p>
-<h3>פרטי האירוע</h3>
-<p>סוג האירוע: {{event_type}} · תאריך: {{event_date}} · מיקום: {{event_location}}</p>
-<h3>התמורה</h3>
-<p>סך התמורה עבור השירותים המפורטים בחבילה: <b>₪{{final_price}}</b>.</p>
-<h3>תנאים כלליים</h3>
-<p>1. הלהקה תגיע למקום האירוע לפחות שעתיים לפני תחילת ההופעה לצורך התארגנות והתקנת ציוד.</p>
-<p>2. ביטול עד 60 יום לפני האירוע — ללא חיוב. ביטול מאוחר יותר — לפי מדיניות הביטולים של הלהקה.</p>
-<p>3. כל שינוי בהרכב או בתכולת החבילה יסוכם בכתב בין הצדדים.</p>`;
+  return `<h3>מידע נוסף</h3>
+<p>המחיר כולל מע"מ.</p>
+<p>1. לצורך שמירת התאריך נדרש תשלום מקדמה של 10%. עם אישור ההזמנה יישלח סיכום עבודה מפורט בהתאם להעדפותיכם.</p>
+<p>2. הלהקה תגיע למקום האירוע לפחות שעתיים לפני תחילת ההופעה לצורך התארגנות והתקנת ציוד.</p>
+<p>3. ביטול עד 60 יום לפני האירוע — ללא חיוב. ביטול מאוחר יותר — לפי מדיניות הביטולים של הלהקה.</p>
+<p>4. כל שינוי בהרכב או בתכולת החבילה יסוכם בכתב בין הצדדים.</p>
+<p>בברכה,<br>יניב וסלי, נתנאל יוסף · להקת קולות</p>`;
 }
 
 module.exports = { authed, portal };

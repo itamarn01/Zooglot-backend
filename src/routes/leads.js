@@ -7,7 +7,7 @@ router.use(requireAuth);
 
 const LEAD_FIELDS = [
   'name','contact_name','event_type','event_date','event_location','relation',
-  'owner_id','team','email','phone1','phone2','proposed_price','stage',
+  'owner_id','team','email','phone1','phone2','id_number','address','proposed_price','stage',
   'sale_status','next_action','package_type','date_status','hear_about_us',
   'referrer','came_to_see_event','seen_at_date','seen_at_place',
   'first_contact_date','close_date','lost_reason','lost_competitor',
@@ -101,15 +101,18 @@ router.delete('/:id', async (req, res) => {
 router.post('/:id/contacts', async (req, res) => {
   const lead = await db.get('leads', req.params.id);
   if (!lead) return res.status(404).json({ error: 'ליד לא נמצא' });
-  const { name, role, phone, email } = req.body || {};
+  const { name, role, phone, email, id_number, address } = req.body || {};
   if (!name) return res.status(400).json({ error: 'שם איש הקשר הוא שדה חובה' });
-  const contact = await db.insert('lead_contacts', { lead_id: lead.id, name, role, phone, email });
+  const contact = await db.insert('lead_contacts', { lead_id: lead.id, name, role, phone, email, id_number, address });
   res.status(201).json({ contact });
 });
 
 router.patch('/:id/contacts/:contactId', async (req, res) => {
-  const { name, role, phone, email } = req.body || {};
-  const contact = await db.update('lead_contacts', req.params.contactId, { name, role, phone, email });
+  const patch = {};
+  for (const f of ['name', 'role', 'phone', 'email', 'id_number', 'address']) {
+    if (f in (req.body || {})) patch[f] = req.body[f];
+  }
+  const contact = await db.update('lead_contacts', req.params.contactId, patch);
   if (!contact) return res.status(404).json({ error: 'איש קשר לא נמצא' });
   res.json({ contact });
 });

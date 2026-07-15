@@ -63,6 +63,8 @@ create table if not exists leads (
   email text,
   phone1 text,                             -- טלפון 1
   phone2 text,                             -- טלפון 2
+  id_number text,                          -- ת"ז של איש הקשר הראשי
+  address text,                            -- כתובת
   -- sale
   proposed_price numeric,                  -- מחיר שהוצע
   stage text default 'לקוח חדש ידני',      -- שלב: לקוח חדש ידני / לקוח משאלון
@@ -125,6 +127,8 @@ create table if not exists lead_contacts (
   role text,                                -- כלה/חתן/אמא/מפיק...
   phone text,
   email text,
+  id_number text,                           -- ת"ז
+  address text,                             -- כתובת
   created_at timestamptz not null default now()
 );
 
@@ -202,8 +206,12 @@ create table if not exists contracts (
   lead_id uuid not null references leads(id) on delete cascade,
   package_id uuid references packages(id),
   title text not null default 'חוזה הופעה',
-  body_html text not null default '',       -- rich text with {{variables}}
-  extra_fields jsonb not null default '[]', -- custom fill-in fields defined per contract
+  body_html text not null default '',       -- closing terms / legal text (rich text with {{variables}})
+  header jsonb not null default '{}',        -- proposal header: { title, intro }
+  sections jsonb not null default '[]',      -- proposal sections: [{ id, title, product_id, details }]
+  fields jsonb not null default '[]',        -- fill-in fields: [{ id, key, label, source, lead_field, value, client_editable }]
+  extra_fields jsonb not null default '[]', -- legacy custom fill-in fields (kept for old contracts)
+  require_client_signature boolean not null default true, -- when false, client "approves" without drawing a signature
   selected_options jsonb not null default '[]', -- optional product ids client picked
   base_price numeric not null default 0,
   final_price numeric not null default 0,
