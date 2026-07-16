@@ -207,10 +207,12 @@ create table if not exists contracts (
   package_id uuid references packages(id),
   title text not null default 'חוזה הופעה',
   body_html text not null default '',       -- closing terms / legal text (rich text with {{variables}})
-  header jsonb not null default '{}',        -- proposal header: { title, intro }
-  sections jsonb not null default '[]',      -- proposal sections: [{ id, title, product_id, details }]
+  header jsonb not null default '{}',        -- legacy proposal header (superseded by title/text sections)
+  sections jsonb not null default '[]',      -- typed proposal blocks: title / text / products (see routes/contracts.js)
   fields jsonb not null default '[]',        -- fill-in fields: [{ id, key, label, source, lead_field, value, client_editable }]
   extra_fields jsonb not null default '[]', -- legacy custom fill-in fields (kept for old contracts)
+  language text not null default 'he',       -- 'he' | 'en' (localises the client-facing labels)
+  direction text not null default 'rtl',     -- 'rtl' | 'ltr' (default text direction of the proposal)
   require_client_signature boolean not null default true, -- when false, client "approves" without drawing a signature
   selected_options jsonb not null default '[]', -- optional product ids client picked
   base_price numeric not null default 0,
@@ -226,6 +228,15 @@ create table if not exists contracts (
   created_by uuid references profiles(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+-- reusable proposal design templates (shared across the team)
+create table if not exists contract_templates (
+  id uuid primary key default uuid_generate_v4(),
+  name text not null,
+  data jsonb not null default '{}',
+  created_by uuid references profiles(id),
+  created_at timestamptz not null default now()
 );
 
 -- ---------- lead forms (מחולל טפסים) ----------
@@ -319,6 +330,7 @@ alter table products enable row level security;
 alter table packages enable row level security;
 alter table package_items enable row level security;
 alter table contracts enable row level security;
+alter table contract_templates enable row level security;
 alter table management_signatures enable row level security;
 alter table lead_forms enable row level security;
 alter table form_submissions enable row level security;
@@ -336,7 +348,7 @@ declare t text;
 begin
   foreach t in array array[
     'profiles','leads','lead_contacts','lead_updates','reminders','products','packages',
-    'package_items','contracts','management_signatures','lead_forms',
+    'package_items','contracts','contract_templates','management_signatures','lead_forms',
     'form_submissions','voice_notes','calendar_links','calendar_events',
     'whatsapp_messages','invitations','competitors']
   loop

@@ -87,6 +87,7 @@ function seed() {
     package_items,
     management_signatures: [],
     contracts: [],
+    contract_templates: [],
     lead_forms: [],
     form_submissions: [],
     voice_notes: [],

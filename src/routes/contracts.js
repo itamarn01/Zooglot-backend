@@ -84,19 +84,36 @@ function renderBody(contract, lead) {
   return substitute(contract.body_html || '', buildVars(contract, lead));
 }
 
-// resolve proposal sections with their referenced product details for the portal
-async function resolveSections(sections) {
+// resolve typed proposal sections for the portal. Types:
+//   title    → { html }
+//   text     → { html }
+//   products → { title_html, items:[{ package_item_id, name_html, desc_html }] }
+// product items are drawn from the contract's package; included items are shown
+// as info, optional items as a selectable line with their (package) price.
+function resolveSections(sections, pkg, vars) {
   if (!Array.isArray(sections) || !sections.length) return [];
-  const products = await db.list('products', {});
-  const pMap = Object.fromEntries(products.map(p => [p.id, p]));
-  return sections.map(s => {
-    const p = s.product_id ? pMap[s.product_id] : null;
-    return {
-      id: s.id,
-      title: s.title || '',
-      details: s.details || '',
-      product: p ? { id: p.id, name: p.name, description: p.description } : null,
-    };
+  const itemsById = Object.fromEntries((pkg?.items || []).map(i => [i.id, i]));
+  return sections.map((s) => {
+    if (s.type === 'title') return { id: s.id, type: 'title', html: substitute(s.html, vars), dir: s.dir || null };
+    if (s.type === 'products') {
+      const items = (s.items || []).map((it) => {
+        const pi = itemsById[it.package_item_id];
+        const prod = pi?.product || null;
+        return {
+          package_item_id: it.package_item_id || null,
+          exists: !!pi,
+          included: pi ? !!pi.included : true,
+          price: pi ? Number(pi.effective_price) || 0 : 0,
+          name_html: substitute(it.name_html || prod?.name || '', vars),
+          name_dir: it.name_dir || null,
+          desc_html: substitute(it.desc_html || prod?.description || '', vars),
+          desc_dir: it.desc_dir || null,
+        };
+      });
+      return { id: s.id, type: 'products', title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null, items };
+    }
+    // 'text' and any legacy shape fall through to a text block
+    return { id: s.id, type: 'text', html: substitute(s.html || s.details || '', vars), dir: s.dir || null };
   });
 }
 
@@ -124,8 +141,10 @@ async function fullContract(contract) {
     package: pkg,
     rendered_body: renderBody(contract, lead),
     rendered_header: { title: substitute(header.title, vars), intro: substitute(header.intro, vars) },
-    resolved_sections: await resolveSections(contract.sections),
+    resolved_sections: resolveSections(contract.sections, pkg, vars),
     client_fields: resolveFields(contract, lead),
+    language: contract.language || 'he',
+    direction: contract.direction || 'rtl',
     require_client_signature: contract.require_client_signature !== false,
     management_signature: mgmtSig && { id: mgmtSig.id, name: mgmtSig.name, image_data: mgmtSig.image_data },
   };
@@ -134,6 +153,27 @@ async function fullContract(contract) {
 // ---------- authenticated CRM routes ----------
 const authed = express.Router();
 authed.use(requireAuth);
+
+// reusable proposal design templates (shared across the team).
+// Registered before the '/:id' routes so '/templates' isn't captured as an id.
+authed.get('/templates', async (req, res) => {
+  const templates = await db.list('contract_templates', { orderBy: 'created_at', asc: false });
+  res.json({ templates });
+});
+
+authed.post('/templates', async (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'שם התבנית חובה' });
+  const template = await db.insert('contract_templates', {
+    name, data: req.body?.data || {}, created_by: req.user.id,
+  });
+  res.status(201).json({ template });
+});
+
+authed.delete('/templates/:tid', async (req, res) => {
+  await db.remove('contract_templates', req.params.tid);
+  res.json({ ok: true });
+});
 
 authed.get('/', async (req, res) => {
   const filters = {};
@@ -157,11 +197,13 @@ authed.post('/', async (req, res) => {
     lead_id,
     package_id: pkg?.id || null,
     title: title || `הצעת מחיר — ${lead.name}`,
-    body_html: body_html || defaultTemplate(),
-    header: { title: `הצעת מחיר עבור ${lead.contact_name || lead.name}`, intro: defaultIntro() },
+    body_html: body_html || '',
+    header: {},
     sections: [],
     fields: [],
     extra_fields: [],
+    language: 'he',
+    direction: 'rtl',
     require_client_signature: true,
     selected_options: [],
     base_price: pkg?.base_price || 0,
@@ -179,7 +221,7 @@ authed.patch('/:id', async (req, res) => {
   if (!c) return res.status(404).json({ error: 'חוזה לא נמצא' });
   const patch = {};
   for (const f of ['title', 'body_html', 'header', 'sections', 'fields', 'extra_fields',
-    'require_client_signature', 'selected_options', 'status', 'management_signature_id']) {
+    'language', 'direction', 'require_client_signature', 'selected_options', 'status', 'management_signature_id']) {
     if (f in (req.body || {})) patch[f] = req.body[f];
   }
   if ('package_id' in (req.body || {})) {
@@ -310,19 +352,5 @@ portal.post('/:token/sign', async (req, res) => {
   }
   res.json({ contract: await fullContract(updated) });
 });
-
-function defaultIntro() {
-  return 'תודה שבחרתם לשקול את להקת קולות להופעה החיה באירוע שלכם. אנו גאים להיחשב לאירוע המיוחד הזה ובטוחים שנצליח ליצור עבורכם ועבור אורחיכם חוויה מוזיקלית בלתי נשכחת.';
-}
-
-function defaultTemplate() {
-  return `<h3>מידע נוסף</h3>
-<p>המחיר כולל מע"מ.</p>
-<p>1. לצורך שמירת התאריך נדרש תשלום מקדמה של 10%. עם אישור ההזמנה יישלח סיכום עבודה מפורט בהתאם להעדפותיכם.</p>
-<p>2. הלהקה תגיע למקום האירוע לפחות שעתיים לפני תחילת ההופעה לצורך התארגנות והתקנת ציוד.</p>
-<p>3. ביטול עד 60 יום לפני האירוע — ללא חיוב. ביטול מאוחר יותר — לפי מדיניות הביטולים של הלהקה.</p>
-<p>4. כל שינוי בהרכב או בתכולת החבילה יסוכם בכתב בין הצדדים.</p>
-<p>בברכה,<br>יניב וסלי, נתנאל יוסף · להקת קולות</p>`;
-}
 
 module.exports = { authed, portal };
