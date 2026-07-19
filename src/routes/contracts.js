@@ -70,6 +70,7 @@ function buildVars(contract, lead) {
     proposed_price: lead?.proposed_price, package_type: lead?.package_type,
     relation: lead?.relation, referrer: lead?.referrer,
     final_price: contract.final_price, base_price: contract.base_price,
+    deposit: Math.round((Number(contract.final_price) || 0) * 0.1), // מקדמה לשריון תאריך (10%)
     today: new Date().toISOString().slice(0, 10),
   };
 }
@@ -95,14 +96,22 @@ function resolveSections(sections, pkg, vars) {
   const itemsById = Object.fromEntries((pkg?.items || []).map(i => [i.id, i]));
   return sections.map((s) => {
     if (s.type === 'title') return { id: s.id, type: 'title', html: substitute(s.html, vars), dir: s.dir || null };
-    if (s.type === 'products') {
+    if (s.type === 'fields') return { id: s.id, type: 'fields' };
+    if (s.type === 'side') {
+      return {
+        id: s.id, type: 'side',
+        title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null,
+        html: substitute(s.html, vars), dir: s.dir || null,
+      };
+    }
+    if (s.type === 'product' || s.type === 'products') {
       const items = (s.items || []).map((it) => {
         const pi = itemsById[it.package_item_id];
         const prod = pi?.product || null;
         return {
           package_item_id: it.package_item_id || null,
           exists: !!pi,
-          included: pi ? !!pi.included : true,
+          included: pi ? !!pi.included : false,
           price: pi ? Number(pi.effective_price) || 0 : 0,
           name_html: substitute(it.name_html || prod?.name || '', vars),
           name_dir: it.name_dir || null,
@@ -110,10 +119,10 @@ function resolveSections(sections, pkg, vars) {
           desc_dir: it.desc_dir || null,
         };
       });
-      return { id: s.id, type: 'products', title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null, items };
+      return { id: s.id, type: 'product', title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null, items };
     }
-    // 'text' and any legacy shape fall through to a text block
-    return { id: s.id, type: 'text', html: substitute(s.html || s.details || '', vars), dir: s.dir || null };
+    // 'text' and any legacy shape fall through to a text block (cols: 1 | 2)
+    return { id: s.id, type: 'text', html: substitute(s.html || s.details || '', vars), dir: s.dir || null, cols: s.cols === 2 ? 2 : 1 };
   });
 }
 
