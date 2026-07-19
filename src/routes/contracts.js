@@ -42,9 +42,20 @@ const CLIENT_WRITABLE_LEAD_FIELDS = [
   'event_type', 'id_number', 'address',
 ];
 
-// resolve each fill-in field to its current value (lead-bound or contract-stored)
-function resolveFields(contract, lead) {
-  return (contract.fields || []).map(f => ({
+// gather all fill-in field definitions — from every 'fields' section plus the
+// legacy global contract.fields (older contracts)
+function fieldDefs(contract) {
+  const out = [];
+  for (const s of (contract.sections || [])) {
+    if (s.type === 'fields') for (const it of (s.items || [])) out.push(it);
+  }
+  for (const f of (contract.fields || [])) out.push(f);
+  return out;
+}
+
+// resolve field definitions to their current values (lead-bound or contract-stored)
+function resolveFieldList(defs, lead) {
+  return (defs || []).map(f => ({
     id: f.id,
     key: f.key,
     label: f.label || f.key,
@@ -59,7 +70,7 @@ function resolveFields(contract, lead) {
 
 // build the {{variable}} substitution map (lead fields + fill-in fields + legacy extras)
 function buildVars(contract, lead) {
-  const fieldVars = Object.fromEntries(resolveFields(contract, lead).map(f => [f.key, f.value]));
+  const fieldVars = Object.fromEntries(resolveFieldList(fieldDefs(contract), lead).map(f => [f.key, f.value]));
   const extraVars = Object.fromEntries((contract.extra_fields || []).map(f => [f.key, f.value ?? '']));
   return {
     ...extraVars, ...fieldVars,
@@ -94,12 +105,18 @@ function renderBody(contract, lead) {
 //   products → { title_html, items:[{ package_item_id, name_html, desc_html }] }
 // product items are drawn from the contract's package; included items are shown
 // as info, optional items as a selectable line with their (package) price.
-function resolveSections(sections, pkg, vars) {
+function resolveSections(sections, pkg, vars, lead) {
   if (!Array.isArray(sections) || !sections.length) return [];
   const itemsById = Object.fromEntries((pkg?.items || []).map(i => [i.id, i]));
   return sections.map((s) => {
     if (s.type === 'title') return { id: s.id, type: 'title', html: substitute(s.html, vars), dir: s.dir || null };
-    if (s.type === 'fields') return { id: s.id, type: 'fields' };
+    if (s.type === 'fields') {
+      return {
+        id: s.id, type: 'fields',
+        title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null,
+        fields: resolveFieldList(s.items || [], lead),
+      };
+    }
     if (s.type === 'side') {
       return {
         id: s.id, type: 'side',
@@ -154,8 +171,8 @@ async function fullContract(contract) {
     package: pkg,
     rendered_body: renderBody(contract, lead),
     rendered_header: { title: substitute(header.title, vars), intro: substitute(header.intro, vars) },
-    resolved_sections: resolveSections(contract.sections, pkg, vars),
-    client_fields: resolveFields(contract, lead),
+    resolved_sections: resolveSections(contract.sections, pkg, vars, lead),
+    client_fields: resolveFieldList(fieldDefs(contract), lead),
     language: contract.language || 'he',
     direction: contract.direction || 'rtl',
     require_client_signature: contract.require_client_signature !== false,
@@ -312,19 +329,24 @@ portal.patch('/:token/fields', async (req, res) => {
   if (c.client_signed_at) return res.status(400).json({ error: 'החוזה כבר נחתם ולא ניתן לשינוי' });
   const edits = req.body?.values && typeof req.body.values === 'object' ? req.body.values : {};
 
-  const fields = c.fields || [];
+  // fields live inside 'fields' sections (and legacy contract.fields). Mutate the
+  // matching definitions in place: lead-bound → write back to the lead; custom → store.
   const leadPatch = {};
-  const nextFields = fields.map((f) => {
-    if (!f.client_editable || !(f.key in edits)) return f;
-    const val = edits[f.key];
-    if (f.source === 'lead' && CLIENT_WRITABLE_LEAD_FIELDS.includes(f.lead_field)) {
-      leadPatch[f.lead_field] = val === '' ? null : val;
-      return f;
+  const applyTo = (arr) => {
+    for (const f of (arr || [])) {
+      if (!f.client_editable || !(f.key in edits)) continue;
+      const val = edits[f.key];
+      if (f.source === 'lead' && CLIENT_WRITABLE_LEAD_FIELDS.includes(f.lead_field)) {
+        leadPatch[f.lead_field] = val === '' ? null : val;
+      } else {
+        f.value = val;
+      }
     }
-    return { ...f, value: val };
-  });
+  };
+  for (const s of (c.sections || [])) if (s.type === 'fields') applyTo(s.items);
+  applyTo(c.fields);
 
-  await db.update('contracts', c.id, { fields: nextFields });
+  await db.update('contracts', c.id, { sections: c.sections, fields: c.fields });
   if (Object.keys(leadPatch).length && c.lead_id) {
     await db.update('leads', c.lead_id, leadPatch);
     await db.insert('lead_updates', {
