@@ -70,7 +70,10 @@ function buildVars(contract, lead) {
     proposed_price: lead?.proposed_price, package_type: lead?.package_type,
     relation: lead?.relation, referrer: lead?.referrer,
     final_price: contract.final_price, base_price: contract.base_price,
-    deposit: Math.round((Number(contract.final_price) || 0) * 0.1), // מקדמה לשריון תאריך (10%)
+    // מקדמה לשריון תאריך: הסכום שנקבע בליד, ואם ריק — 10% מהמחיר הסופי
+    deposit: (lead && lead.deposit_amount != null && lead.deposit_amount !== '')
+      ? lead.deposit_amount
+      : Math.round((Number(contract.final_price) || 0) * 0.1),
     today: new Date().toISOString().slice(0, 10),
   };
 }
@@ -102,6 +105,7 @@ function resolveSections(sections, pkg, vars) {
         id: s.id, type: 'side',
         title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null,
         html: substitute(s.html, vars), dir: s.dir || null,
+        cols: s.cols === 2 ? 2 : 1,
       };
     }
     if (s.type === 'product' || s.type === 'products') {
@@ -119,7 +123,7 @@ function resolveSections(sections, pkg, vars) {
           desc_dir: it.desc_dir || null,
         };
       });
-      return { id: s.id, type: 'product', title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null, items };
+      return { id: s.id, type: 'product', title_html: substitute(s.title_html, vars), title_dir: s.title_dir || null, cols: s.cols === 2 ? 2 : 1, items };
     }
     // 'text' and any legacy shape fall through to a text block (cols: 1 | 2)
     return { id: s.id, type: 'text', html: substitute(s.html || s.details || '', vars), dir: s.dir || null, cols: s.cols === 2 ? 2 : 1 };

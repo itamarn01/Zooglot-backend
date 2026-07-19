@@ -67,6 +67,7 @@ create table if not exists leads (
   address text,                            -- כתובת
   -- sale
   proposed_price numeric,                  -- מחיר שהוצע
+  deposit_amount numeric,                   -- מקדמה לשריון תאריך (סכום חופשי; {{deposit}})
   stage text default 'לקוח חדש ידני',      -- שלב: לקוח חדש ידני / לקוח משאלון
   sale_status text not null default 'open' -- סטאטוס מכירה / pipeline
     check (sale_status in ('open','win','lost')),

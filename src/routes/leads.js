@@ -7,7 +7,7 @@ router.use(requireAuth);
 
 const LEAD_FIELDS = [
   'name','contact_name','event_type','event_date','event_location','relation',
-  'owner_id','team','email','phone1','phone2','id_number','address','proposed_price','stage',
+  'owner_id','team','email','phone1','phone2','id_number','address','proposed_price','deposit_amount','stage',
   'sale_status','next_action','package_type','date_status','hear_about_us',
   'referrer','came_to_see_event','seen_at_date','seen_at_place',
   'first_contact_date','close_date','lost_reason','lost_competitor',
