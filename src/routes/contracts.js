@@ -25,13 +25,37 @@ async function packageWithItems(packageId) {
   };
 }
 
-function computeFinalPrice(contract, pkg) {
-  let total = Number(contract.base_price) || 0;
-  if (!pkg) return total;
-  const selected = new Set(contract.selected_options || []);
-  for (const item of pkg.items) {
-    if (!item.included && selected.has(item.id)) total += Number(item.effective_price) || 0;
+// The proposal's base price is the price quoted on the lead ("מחיר שהוצע").
+// Only when that is empty do we fall back to the package's base price, and with
+// neither we deliberately return 0 so an unfilled quote is obvious in the doc.
+function resolveBasePrice(pkg, lead) {
+  const quoted = lead?.proposed_price;
+  if (quoted !== null && quoted !== undefined && quoted !== '') return Number(quoted) || 0;
+  return Number(pkg?.base_price) || 0;
+}
+
+// every priced option the client may tick: package extras plus any catalogue
+// product dropped straight into a section (which carries its own price)
+function optionPrices(contract, pkg) {
+  const prices = {};
+  for (const item of (pkg?.items || [])) {
+    if (!item.included) prices[item.id] = Number(item.effective_price) || 0;
   }
+  for (const s of (contract.sections || [])) {
+    if (s.type !== 'product' && s.type !== 'products') continue;
+    for (const it of (s.items || [])) {
+      if (it.package_item_id || it.included !== false || !it.product_id) continue;
+      prices[`prod:${it.product_id}`] = Number(it.price) || 0;
+    }
+  }
+  return prices;
+}
+
+function computeFinalPrice(contract, pkg, lead) {
+  const prices = optionPrices(contract, pkg);
+  const selected = new Set(contract.selected_options || []);
+  let total = resolveBasePrice(pkg, lead);
+  for (const id of selected) total += prices[id] || 0;
   return total;
 }
 
@@ -129,11 +153,16 @@ function resolveSections(sections, pkg, vars, lead) {
       const items = (s.items || []).map((it) => {
         const pi = itemsById[it.package_item_id];
         const prod = pi?.product || null;
+        // a line is a real product either via the package or via a catalogue
+        // product picked straight into the section; otherwise it's plain text
+        const fromPkg = !!pi;
+        const isProduct = fromPkg || !!it.product_id;
         return {
           package_item_id: it.package_item_id || null,
-          exists: !!pi,
-          included: pi ? !!pi.included : false,
-          price: pi ? Number(pi.effective_price) || 0 : 0,
+          option_id: fromPkg ? pi.id : (it.product_id ? `prod:${it.product_id}` : null),
+          exists: isProduct,
+          included: fromPkg ? !!pi.included : it.included !== false,
+          price: fromPkg ? Number(pi.effective_price) || 0 : Number(it.price) || 0,
           name_html: substitute(it.name_html || prod?.name || '', vars),
           name_dir: it.name_dir || null,
           desc_html: substitute(it.desc_html || prod?.description || '', vars),
@@ -150,9 +179,12 @@ function resolveSections(sections, pkg, vars, lead) {
 async function fullContract(contract) {
   const lead = contract.lead_id ? await db.get('leads', contract.lead_id) : null;
   const pkg = await packageWithItems(contract.package_id);
-  const final_price = computeFinalPrice(contract, pkg);
-  if (final_price !== contract.final_price) {
-    contract = await db.update('contracts', contract.id, { final_price }) || contract;
+  // base + final are derived (quote on the lead → package → 0), so they stay
+  // correct when the quoted price or the package changes after the contract was made
+  const base_price = resolveBasePrice(pkg, lead);
+  const final_price = computeFinalPrice(contract, pkg, lead);
+  if (base_price !== contract.base_price || final_price !== contract.final_price) {
+    contract = await db.update('contracts', contract.id, { base_price, final_price }) || contract;
   }
   let mgmtSig = null;
   if (contract.management_signature_id) {
@@ -236,8 +268,8 @@ authed.post('/', async (req, res) => {
     direction: 'rtl',
     require_client_signature: true,
     selected_options: [],
-    base_price: pkg?.base_price || 0,
-    final_price: pkg?.base_price || 0,
+    base_price: resolveBasePrice(pkg, lead),
+    final_price: resolveBasePrice(pkg, lead),
     status: 'draft',
     client_token: crypto.randomBytes(16).toString('hex'),
     created_by: req.user.id,
@@ -257,11 +289,11 @@ authed.patch('/:id', async (req, res) => {
   if ('package_id' in (req.body || {})) {
     const pkg = await packageWithItems(req.body.package_id);
     patch.package_id = pkg?.id || null;
-    patch.base_price = pkg?.base_price || 0;
     patch.selected_options = [];
     if (pkg && c.lead_id) await db.update('leads', c.lead_id, { package_type: pkg.name });
   }
-  if ('base_price' in (req.body || {})) patch.base_price = Number(req.body.base_price) || 0;
+  // base_price is derived in fullContract() from the lead's quoted price — it is
+  // deliberately not settable here, so there is one source of truth.
   if (patch.management_signature_id && !c.management_signed_at) {
     patch.management_signed_at = new Date().toISOString();
   }
