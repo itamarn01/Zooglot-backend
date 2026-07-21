@@ -59,6 +59,34 @@ function computeFinalPrice(contract, pkg, lead) {
   return total;
 }
 
+// Full money breakdown for the proposal's TOTAL box.
+//   subtotal        base + any selected paid options (before discount)
+//   discount_amount money taken off (percent of subtotal, or a fixed sum)
+//   net             subtotal - discount
+//   vat_mode        'none' | 'added' (net is pre-VAT) | 'included' (net already has VAT)
+//   vat_amount      the VAT portion for display
+//   total           what the client pays
+function buildPrice(contract, subtotal) {
+  const sub = Math.max(0, Math.round(Number(subtotal) || 0));
+  const dType = ['percent', 'amount'].includes(contract.discount_type) ? contract.discount_type : 'none';
+  const dVal = Math.max(0, Number(contract.discount_value) || 0);
+  const discount_amount = dType === 'percent'
+    ? Math.round(sub * Math.min(dVal, 100) / 100)
+    : dType === 'amount' ? Math.min(Math.round(dVal), sub) : 0;
+  const net = sub - discount_amount;
+
+  const vMode = ['added', 'included'].includes(contract.vat_mode) ? contract.vat_mode : 'none';
+  const vRate = Math.max(0, Number(contract.vat_rate) || 0);
+  let vat_amount = 0, total = net;
+  if (vMode === 'added') { vat_amount = Math.round(net * vRate / 100); total = net + vat_amount; }
+  else if (vMode === 'included') { vat_amount = Math.round(net - net / (1 + vRate / 100)); total = net; }
+
+  return {
+    subtotal: sub, discount_type: dType, discount_value: dVal, discount_amount,
+    net, vat_mode: vMode, vat_rate: vRate, vat_amount, total,
+  };
+}
+
 // lead columns a client-editable field may write back to (whitelist — guards
 // against a poisoned contract writing arbitrary columns from the public portal)
 const CLIENT_WRITABLE_LEAD_FIELDS = [
@@ -105,6 +133,7 @@ function buildVars(contract, lead) {
     proposed_price: lead?.proposed_price, package_type: lead?.package_type,
     relation: lead?.relation, referrer: lead?.referrer,
     final_price: contract.final_price, base_price: contract.base_price,
+    total: buildPrice(contract, contract.final_price).total,
     // מקדמה לשריון תאריך: הסכום שנקבע בליד, ואם ריק — 10% מהמחיר הסופי
     deposit: (lead && lead.deposit_amount != null && lead.deposit_amount !== '')
       ? lead.deposit_amount
@@ -204,6 +233,7 @@ async function fullContract(contract) {
     rendered_body: renderBody(contract, lead),
     rendered_header: { title: substitute(header.title, vars), intro: substitute(header.intro, vars) },
     resolved_sections: resolveSections(contract.sections, pkg, vars, lead),
+    price: buildPrice(contract, final_price),
     client_fields: resolveFieldList(fieldDefs(contract), lead),
     language: contract.language || 'he',
     direction: contract.direction || 'rtl',
@@ -267,6 +297,10 @@ authed.post('/', async (req, res) => {
     language: 'he',
     direction: 'rtl',
     require_client_signature: true,
+    vat_mode: 'none',
+    vat_rate: 18,
+    discount_type: 'none',
+    discount_value: 0,
     selected_options: [],
     base_price: resolveBasePrice(pkg, lead),
     final_price: resolveBasePrice(pkg, lead),
@@ -283,7 +317,8 @@ authed.patch('/:id', async (req, res) => {
   if (!c) return res.status(404).json({ error: 'חוזה לא נמצא' });
   const patch = {};
   for (const f of ['title', 'body_html', 'header', 'sections', 'fields', 'extra_fields',
-    'language', 'direction', 'require_client_signature', 'selected_options', 'status', 'management_signature_id']) {
+    'language', 'direction', 'require_client_signature', 'selected_options', 'status', 'management_signature_id',
+    'vat_mode', 'vat_rate', 'discount_type', 'discount_value']) {
     if (f in (req.body || {})) patch[f] = req.body[f];
   }
   if ('package_id' in (req.body || {})) {
@@ -413,7 +448,7 @@ portal.post('/:token/sign', async (req, res) => {
   if (c.lead_id) {
     await db.insert('lead_updates', {
       lead_id: c.lead_id, author_id: null, kind: 'system',
-      body: `${hasSig ? '✍️ הלקוח חתם על ההצעה' : '✅ הלקוח אישר את ההצעה'} (${signer_name.trim()}) · מחיר סופי: ₪${updated.final_price}`,
+      body: `${hasSig ? '✍️ הלקוח חתם על ההצעה' : '✅ הלקוח אישר את ההצעה'} (${signer_name.trim()}) · לתשלום: ₪${buildPrice(updated, updated.final_price).total}`,
     });
     await db.update('leads', c.lead_id, { sale_status: 'win', close_date: new Date().toISOString().slice(0, 10) });
   }
