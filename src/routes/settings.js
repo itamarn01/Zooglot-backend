@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const config = require('../config');
 const email = require('../services/email');
+const whatsapp = require('../services/whatsapp');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -127,6 +128,16 @@ router.get('/integrations', async (req, res) => {
     mock_db: config.mockDb,
     webhook_url: `${config.appUrl}/api/webhooks/lead?key=${config.webhookSecret}`,
   });
+});
+
+// ---- WhatsApp linking (scan the QR from the band phone to connect) ----
+router.get('/whatsapp', (req, res) => res.json(whatsapp.status()));
+router.post('/whatsapp/connect', requireAdmin, async (req, res) => {
+  try { res.json(await whatsapp.connect()); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+router.post('/whatsapp/disconnect', requireAdmin, async (req, res) => {
+  res.json(await whatsapp.disconnect());
 });
 
 module.exports = router;

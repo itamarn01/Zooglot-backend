@@ -215,7 +215,8 @@ create table if not exists contracts (
   language text not null default 'he',       -- 'he' | 'en' (localises the client-facing labels)
   direction text not null default 'rtl',     -- 'rtl' | 'ltr' (default text direction of the proposal)
   require_client_signature boolean not null default true, -- when false, client "approves" without drawing a signature
-  selected_options jsonb not null default '[]', -- optional product ids client picked
+  selected_options jsonb not null default '[]', -- optional product ids client picked (locked at signing)
+  post_sign_options jsonb not null default '[]', -- extra options the client added AFTER signing
   vat_mode text not null default 'none' check (vat_mode in ('none','added','included')), -- how VAT is shown in the TOTAL
   vat_rate numeric not null default 18,      -- VAT percentage
   discount_type text not null default 'none' check (discount_type in ('none','percent','amount')),

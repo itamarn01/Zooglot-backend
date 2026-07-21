@@ -6,6 +6,9 @@ const config = require('../config');
 const db = require('../db');
 
 let client = null;
+// live pairing state, surfaced to the Settings screen so a user can link the
+// band phone by scanning the QR in the app (no server-console access needed)
+let state = { qr: null, connected: false, me: null, starting: false, error: null };
 
 async function handleIncoming(message) {
   const chatId = message.from;                       // e.g. 9725...@c.us
@@ -47,26 +50,73 @@ async function handleIncoming(message) {
   console.log(`[whatsapp] message from ${fromNumber} -> lead ${lead.id}`);
 }
 
+// Begin pairing. Returns immediately with the current state; the QR appears in
+// `state.qr` a moment later (poll status()). Scanning it from the band's phone
+// (WhatsApp → Linked devices) links the account. Safe to call repeatedly.
+async function connect() {
+  if (!config.whatsapp.enabled) throw new Error('וואטסאפ מושבת בשרת — יש להגדיר ENABLE_WHATSAPP=true');
+  if (client || state.starting) return status();
+
+  let wa;
+  try {
+    wa = require('@open-wa/wa-automate');
+  } catch {
+    state.error = 'החבילה @open-wa/wa-automate אינה מותקנת בשרת';
+    throw new Error(state.error);
+  }
+
+  state = { qr: null, connected: false, me: null, starting: true, error: null };
+  // don't await the full create() — it only resolves once paired, but we want to
+  // hand the QR back to the UI while the user is still scanning
+  wa.create({
+    sessionId: config.whatsapp.sessionId,
+    multiDevice: true,
+    headless: true,
+    qrTimeout: 0,
+    authTimeout: 0,
+    disableSpins: true,
+    // OpenWA hands us the QR as a base64 PNG data URL — exactly what an <img> needs
+    catchQR: (qrCode) => { state.qr = qrCode; state.connected = false; },
+  }).then(async (c) => {
+    client = c;
+    state.connected = true; state.qr = null; state.starting = false;
+    try { state.me = await c.getHostNumber?.(); } catch { /* best-effort */ }
+    c.onMessage(handleIncoming);
+    c.onStateChanged?.((s) => { if (s === 'UNPAIRED' || s === 'CONFLICT') { state.connected = false; client = null; } });
+    console.log(`[whatsapp] connected${state.me ? ` as ${state.me}` : ''}, listening for messages`);
+  }).catch((e) => {
+    state.starting = false; state.error = e.message; state.qr = null;
+    console.warn('[whatsapp] connect failed:', e.message);
+  });
+
+  return status();
+}
+
+async function disconnect() {
+  if (client) { try { await (client.kill?.() || client.logout?.()); } catch { /* ignore */ } }
+  client = null;
+  state = { qr: null, connected: false, me: null, starting: false, error: null };
+  return status();
+}
+
+function status() {
+  return {
+    enabled: config.whatsapp.enabled,
+    installed: (() => { try { require.resolve('@open-wa/wa-automate'); return true; } catch { return false; } })(),
+    connected: state.connected, starting: state.starting,
+    qr: state.qr, me: state.me, error: state.error,
+    bandNumber: config.whatsapp.bandNumber,
+  };
+}
+
+// pairing no longer auto-starts at boot: a headless browser per deploy is heavy
+// and, without a scanned session, pointless. The user links it from Settings.
 async function start() {
   if (!config.whatsapp.enabled) {
     console.log('[whatsapp] disabled (set ENABLE_WHATSAPP=true to activate)');
     return;
   }
-  let wa;
-  try {
-    wa = require('@open-wa/wa-automate');
-  } catch {
-    console.warn('[whatsapp] @open-wa/wa-automate is not installed — run: npm i @open-wa/wa-automate');
-    return;
-  }
-  client = await wa.create({
-    sessionId: config.whatsapp.sessionId,
-    multiDevice: true,
-    headless: true,
-    qrTimeout: 0,
-  });
-  client.onMessage(handleIncoming);
-  console.log(`[whatsapp] connected, listening on band number ${config.whatsapp.bandNumber}`);
+  console.log('[whatsapp] enabled — link the band phone from Settings → WhatsApp');
 }
 
 async function sendMessage(chatId, text) {
@@ -91,4 +141,4 @@ async function sendToNumber(phone, text) {
 
 const isReady = () => !!client;
 
-module.exports = { start, sendMessage, sendToNumber, toChatId, isReady, handleIncoming };
+module.exports = { start, connect, disconnect, status, sendMessage, sendToNumber, toChatId, isReady, handleIncoming };

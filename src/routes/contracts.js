@@ -53,7 +53,8 @@ function optionPrices(contract, pkg) {
 
 function computeFinalPrice(contract, pkg, lead) {
   const prices = optionPrices(contract, pkg);
-  const selected = new Set(contract.selected_options || []);
+  // options agreed at signing plus any add-ons the client picked afterwards
+  const selected = new Set([...(contract.selected_options || []), ...(contract.post_sign_options || [])]);
   let total = resolveBasePrice(pkg, lead);
   for (const id of selected) total += prices[id] || 0;
   return total;
@@ -301,6 +302,7 @@ authed.post('/', async (req, res) => {
     vat_rate: 18,
     discount_type: 'none',
     discount_value: 0,
+    post_sign_options: [],
     selected_options: [],
     base_price: resolveBasePrice(pkg, lead),
     final_price: resolveBasePrice(pkg, lead),
@@ -385,6 +387,39 @@ portal.patch('/:token/options', async (req, res) => {
   if (c.client_signed_at) return res.status(400).json({ error: 'החוזה כבר נחתם ולא ניתן לשינוי' });
   const selected = Array.isArray(req.body?.selected_options) ? req.body.selected_options : [];
   const updated = await db.update('contracts', c.id, { selected_options: selected });
+  res.json({ contract: await fullContract(updated) });
+});
+
+// AFTER signing the client may still ADD optional products (an upsell), without
+// touching anything else in the signed contract. Hardened:
+//   • only works once the contract is signed (before that, use /options)
+//   • only ids that are real optional products may be added
+//   • ids already locked in at signing (selected_options) are ignored here, so
+//     the client can never remove or alter what they already agreed to
+//   • nothing but post_sign_options is written
+portal.patch('/:token/addons', async (req, res) => {
+  const c = await byToken(req, res);
+  if (!c) return;
+  if (!c.client_signed_at) return res.status(400).json({ error: 'ניתן להוסיף תוספות רק לאחר החתימה' });
+
+  const pkg = await packageWithItems(c.package_id);
+  const validIds = new Set(Object.keys(optionPrices(c, pkg)));
+  const locked = new Set(c.selected_options || []);
+  const requested = Array.isArray(req.body?.post_sign_options) ? req.body.post_sign_options : [];
+  const next = [...new Set(requested)].filter(id => validIds.has(id) && !locked.has(id));
+
+  const before = new Set(c.post_sign_options || []);
+  const added = next.filter(id => !before.has(id));
+  const updated = await db.update('contracts', c.id, { post_sign_options: next });
+
+  if (added.length && c.lead_id) {
+    const lead = await db.get('leads', c.lead_id);
+    const total = buildPrice(updated, computeFinalPrice(updated, pkg, lead)).total;
+    await db.insert('lead_updates', {
+      lead_id: c.lead_id, author_id: null, kind: 'system',
+      body: `➕ הלקוח הוסיף ${added.length} תוספת/ות לאחר החתימה · סה"כ מעודכן: ₪${total}`,
+    });
+  }
   res.json({ contract: await fullContract(updated) });
 });
 
