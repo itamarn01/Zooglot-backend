@@ -227,6 +227,7 @@ create table if not exists contracts (
     check (status in ('draft','sent','client_signed','completed','cancelled')),
   client_token text unique,                 -- public portal access token
   management_signature_id uuid references management_signatures(id),
+  management_signature_id_2 uuid references management_signatures(id), -- optional 2nd signatory
   management_signed_at timestamptz,
   client_signature text,                    -- data URL drawn by client
   client_signed_at timestamptz,
@@ -304,13 +305,22 @@ create table if not exists calendar_events (
 -- ---------- WhatsApp ingestion (OpenWA) ----------
 create table if not exists whatsapp_messages (
   id uuid primary key default uuid_generate_v4(),
-  wa_chat_id text not null,                 -- e.g. 972555081080@c.us
+  wa_chat_id text not null,                 -- e.g. 972555081080@s.whatsapp.net
   wa_message_id text unique,
   from_number text,
   from_name text,
   body text,
+  direction text not null default 'in',     -- 'in' (received) | 'out' (sent by the band)
   lead_id uuid references leads(id) on delete set null,
   created_at timestamptz not null default now()
+);
+
+-- persisted Baileys auth so the WhatsApp link survives redeploys (Railway's FS is ephemeral)
+create table if not exists whatsapp_sessions (
+  id uuid primary key default uuid_generate_v4(),
+  session_id text unique not null,
+  data text,                                -- serialized Baileys auth state (creds + keys)
+  updated_at timestamptz not null default now()
 );
 
 -- ---------- storage buckets (run once; ignore errors if exist) ----------
@@ -344,6 +354,7 @@ alter table voice_notes enable row level security;
 alter table calendar_links enable row level security;
 alter table calendar_events enable row level security;
 alter table whatsapp_messages enable row level security;
+alter table whatsapp_sessions enable row level security;
 alter table invitations enable row level security;
 alter table competitors enable row level security;
 alter table otp_codes enable row level security;
@@ -356,7 +367,7 @@ begin
     'profiles','leads','lead_contacts','lead_updates','reminders','products','packages',
     'package_items','contracts','contract_templates','management_signatures','lead_forms',
     'form_submissions','voice_notes','calendar_links','calendar_events',
-    'whatsapp_messages','invitations','competitors']
+    'whatsapp_messages','whatsapp_sessions','invitations','competitors']
   loop
     execute format(
       'drop policy if exists team_all on %I; create policy team_all on %I

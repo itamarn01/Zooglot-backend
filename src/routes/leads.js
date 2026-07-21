@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const whatsapp = require('../services/whatsapp');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -141,6 +142,35 @@ router.post('/:id/updates', async (req, res) => {
     lead_id: lead.id, author_id: req.user.id, body, kind: 'note',
   });
   res.status(201).json({ update: { ...update, author_name: req.user.full_name || req.user.email } });
+});
+
+// ---- WhatsApp thread (chat view per lead) ----
+router.get('/:id/messages', async (req, res) => {
+  const messages = await db.list('whatsapp_messages', {
+    filters: { lead_id: req.params.id }, orderBy: 'created_at', asc: true,
+  });
+  const st = whatsapp.status();
+  res.json({ messages, wa: { connected: st.connected, enabled: st.enabled } });
+});
+
+router.post('/:id/messages', async (req, res) => {
+  const lead = await db.get('leads', req.params.id);
+  if (!lead) return res.status(404).json({ error: 'ליד לא נמצא' });
+  const body = (req.body?.body || '').trim();
+  if (!body) return res.status(400).json({ error: 'הודעה ריקה' });
+  if (!lead.phone1 && !(lead.source_ref || '').includes('@')) {
+    return res.status(400).json({ error: 'אין מספר טלפון לליד' });
+  }
+  let jid;
+  try { jid = await whatsapp.sendToLead(lead, body); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+
+  const message = await db.insert('whatsapp_messages', {
+    wa_chat_id: jid, wa_message_id: null,
+    from_number: null, from_name: req.user.full_name || req.user.email,
+    body, lead_id: lead.id, direction: 'out',
+  });
+  res.status(201).json({ message });
 });
 
 // ---- reminders (email / whatsapp to whoever handles the event) ----

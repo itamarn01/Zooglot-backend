@@ -1,100 +1,222 @@
-// WhatsApp Business ingestion via OpenWA (https://github.com/open-wa/wa-automate-nodejs,
-// referenced fork: rmyndharis/OpenWA). Optional: only starts when
-// ENABLE_WHATSAPP=true and @open-wa/wa-automate is installed.
-// Incoming messages to the band number (055-5081080) become leads.
+// WhatsApp integration via Baileys (https://github.com/WhiskeySockets/Baileys).
+// Baileys talks to WhatsApp over a plain WebSocket — no Chromium/Puppeteer — so
+// it runs on Railway where the OpenWA/headless-Chrome approach failed to launch.
+//
+// Flow: connect() opens a socket and emits a QR (as a data-URL image) that the
+// band phone scans (WhatsApp → Linked devices). Auth is persisted in the DB, so
+// the link survives redeploys and reconnects automatically at boot. Incoming
+// messages become / attach to leads; the thread is viewable per lead.
 const config = require('../config');
 const db = require('../db');
 
-let client = null;
-// live pairing state, surfaced to the Settings screen so a user can link the
-// band phone by scanning the QR in the app (no server-console access needed)
+let sock = null;
+let baileys = null;
+let reconnectTimer = null;
+// live pairing state surfaced to the Settings screen
 let state = { qr: null, connected: false, me: null, starting: false, error: null };
 
-async function handleIncoming(message) {
-  const chatId = message.from;                       // e.g. 9725...@c.us
-  const fromNumber = chatId.replace(/@.*$/, '');
-  const body = (message.body || '').trim();
-  if (!body || message.isGroupMsg) return;
+const SESSION_ID = config.whatsapp.sessionId || 'kolot';
 
-  // dedupe by wa message id
-  if (message.id && await db.getBy('whatsapp_messages', 'wa_message_id', message.id)) return;
+function isInstalled() {
+  try { require.resolve('@whiskeysockets/baileys'); return true; }
+  catch { return false; }
+}
 
-  // attach to an existing open lead from the same number, else create one
-  let lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: chatId } }))[0];
+async function loadBaileys() {
+  if (!baileys) baileys = await import('@whiskeysockets/baileys');
+  return baileys;
+}
+
+// ---- DB-backed auth store (survives Railway's ephemeral filesystem) ----
+async function loadSessionRow() {
+  const rows = await db.list('whatsapp_sessions', { filters: { session_id: SESSION_ID } });
+  return rows[0] || null;
+}
+async function saveSessionBlob(blob) {
+  const row = await loadSessionRow();
+  if (row) await db.update('whatsapp_sessions', row.id, { data: blob });
+  else await db.insert('whatsapp_sessions', { session_id: SESSION_ID, data: blob });
+}
+async function clearSession() {
+  const row = await loadSessionRow();
+  if (row) await db.remove('whatsapp_sessions', row.id);
+}
+
+// mirrors Baileys' useMultiFileAuthState, but stores the whole state as one blob
+async function useDbAuthState() {
+  const { initAuthCreds, BufferJSON, proto } = baileys;
+  const row = await loadSessionRow();
+  let parsed = null;
+  if (row?.data) {
+    try {
+      const raw = typeof row.data === 'string' ? row.data : JSON.stringify(row.data);
+      parsed = JSON.parse(raw, BufferJSON.reviver);
+    } catch { /* corrupt — start fresh */ }
+  }
+  const creds = parsed?.creds || initAuthCreds();
+  const keys = parsed?.keys || {};
+  const save = () => saveSessionBlob(JSON.stringify({ creds, keys }, BufferJSON.replacer));
+
+  return {
+    saveCreds: save,
+    state: {
+      creds,
+      keys: {
+        get: (type, ids) => {
+          const data = {};
+          for (const id of ids) {
+            let value = keys[`${type}-${id}`];
+            if (type === 'app-state-sync-key' && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            data[id] = value;
+          }
+          return data;
+        },
+        set: (data) => {
+          for (const type of Object.keys(data)) {
+            for (const id of Object.keys(data[type])) {
+              const value = data[type][id];
+              const k = `${type}-${id}`;
+              if (value) keys[k] = value; else delete keys[k];
+            }
+          }
+          return save();
+        },
+      },
+    },
+  };
+}
+
+// ---- incoming messages → leads ----
+function extractText(m) {
+  const msg = m.message;
+  if (!msg) return '';
+  return msg.conversation
+    || msg.extendedTextMessage?.text
+    || msg.imageMessage?.caption
+    || msg.videoMessage?.caption
+    || msg.documentMessage?.caption
+    || '';
+}
+
+async function handleIncoming(m) {
+  if (!m.message || m.key?.fromMe) return;
+  const remoteJid = m.key?.remoteJid || '';
+  // skip groups, status broadcasts and system chats
+  if (!remoteJid.endsWith('@s.whatsapp.net')) return;
+  const body = extractText(m).trim();
+  if (!body) return;
+
+  const waId = m.key.id || null;
+  if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe
+
+  const fromNumber = remoteJid.replace(/@.*$/, '');
+  const pushName = m.pushName || null;
+
+  let lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: remoteJid } }))[0];
   if (!lead) {
     lead = await db.insert('leads', {
-      name: `וואטסאפ: ${message.sender?.pushname || fromNumber}`,
-      contact_name: message.sender?.pushname || null,
+      name: `וואטסאפ: ${pushName || fromNumber}`,
+      contact_name: pushName || null,
       phone1: fromNumber.replace(/^972/, '0'),
       stage: 'לקוח חדש ידני',
       sale_status: 'open',
       next_action: 'עוד פרטים',
       source: 'whatsapp',
-      source_ref: chatId,
+      source_ref: remoteJid,
       first_contact_date: new Date().toISOString().slice(0, 10),
     });
   }
 
   await db.insert('whatsapp_messages', {
-    wa_chat_id: chatId,
-    wa_message_id: message.id || null,
-    from_number: fromNumber,
-    from_name: message.sender?.pushname || null,
-    body,
-    lead_id: lead.id,
+    wa_chat_id: remoteJid, wa_message_id: waId,
+    from_number: fromNumber, from_name: pushName,
+    body, lead_id: lead.id, direction: 'in',
   });
   await db.insert('lead_updates', {
     lead_id: lead.id, author_id: null, kind: 'system',
-    body: `📱 הודעת וואטסאפ נכנסת:\n${body}`,
+    body: `📱 וואטסאפ נכנס:\n${body}`,
   });
-  console.log(`[whatsapp] message from ${fromNumber} -> lead ${lead.id}`);
+  console.log(`[whatsapp] in from ${fromNumber} -> lead ${lead.id}`);
 }
 
-// Begin pairing. Returns immediately with the current state; the QR appears in
-// `state.qr` a moment later (poll status()). Scanning it from the band's phone
-// (WhatsApp → Linked devices) links the account. Safe to call repeatedly.
+// ---- connection lifecycle ----
 async function connect() {
   if (!config.whatsapp.enabled) throw new Error('וואטסאפ מושבת בשרת — יש להגדיר ENABLE_WHATSAPP=true');
-  if (client || state.starting) return status();
-
-  let wa;
-  try {
-    wa = require('@open-wa/wa-automate');
-  } catch {
-    state.error = 'החבילה @open-wa/wa-automate אינה מותקנת בשרת';
+  if (sock || state.starting) return status();
+  if (!isInstalled()) {
+    state.error = 'החבילה @whiskeysockets/baileys אינה מותקנת בשרת';
     throw new Error(state.error);
   }
+  clearTimeout(reconnectTimer);
+  await loadBaileys();
+  const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = baileys;
+  const QRCode = require('qrcode');
 
   state = { qr: null, connected: false, me: null, starting: true, error: null };
-  // don't await the full create() — it only resolves once paired, but we want to
-  // hand the QR back to the UI while the user is still scanning
-  wa.create({
-    sessionId: config.whatsapp.sessionId,
-    multiDevice: true,
-    headless: true,
-    qrTimeout: 0,
-    authTimeout: 0,
-    disableSpins: true,
-    // OpenWA hands us the QR as a base64 PNG data URL — exactly what an <img> needs
-    catchQR: (qrCode) => { state.qr = qrCode; state.connected = false; },
-  }).then(async (c) => {
-    client = c;
-    state.connected = true; state.qr = null; state.starting = false;
-    try { state.me = await c.getHostNumber?.(); } catch { /* best-effort */ }
-    c.onMessage(handleIncoming);
-    c.onStateChanged?.((s) => { if (s === 'UNPAIRED' || s === 'CONFLICT') { state.connected = false; client = null; } });
-    console.log(`[whatsapp] connected${state.me ? ` as ${state.me}` : ''}, listening for messages`);
-  }).catch((e) => {
-    state.starting = false; state.error = e.message; state.qr = null;
-    console.warn('[whatsapp] connect failed:', e.message);
+  const { state: authState, saveCreds } = await useDbAuthState();
+  let version;
+  try { ({ version } = await fetchLatestBaileysVersion()); } catch { /* use bundled */ }
+
+  sock = makeWASocket({
+    version,
+    auth: authState,
+    printQRInTerminal: false,
+    markOnlineOnConnect: false,
+    browser: ['Zooglot.DB', 'Chrome', '1.0.0'],
+    logger: quietLogger(),
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', async (u) => {
+    const { connection, lastDisconnect, qr } = u;
+    if (qr) {
+      try { state.qr = await QRCode.toDataURL(qr); } catch { state.qr = null; }
+      state.connected = false;
+    }
+    if (connection === 'open') {
+      state.connected = true; state.starting = false; state.qr = null; state.error = null;
+      state.me = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0] : null;
+      console.log(`[whatsapp] connected${state.me ? ' as ' + state.me : ''}`);
+    }
+    if (connection === 'close') {
+      state.connected = false; state.starting = false; state.qr = null;
+      const code = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut;
+      sock = null;
+      if (loggedOut) {
+        await clearSession().catch(() => {});
+        state.error = 'החיבור נותק (Logged out) — יש לסרוק שוב';
+        console.warn('[whatsapp] logged out — session cleared');
+      } else {
+        // transient drop → auto-reconnect
+        console.warn('[whatsapp] connection closed, reconnecting…', code || '');
+        reconnectTimer = setTimeout(() => connect().catch(e => console.warn('[whatsapp] reconnect failed:', e.message)), 3000);
+      }
+    }
+  });
+
+  sock.ev.on('messages.upsert', async (ev) => {
+    if (ev.type !== 'notify') return;
+    for (const m of ev.messages) {
+      try { await handleIncoming(m); }
+      catch (e) { console.warn('[whatsapp] incoming error:', e.message); }
+    }
   });
 
   return status();
 }
 
 async function disconnect() {
-  if (client) { try { await (client.kill?.() || client.logout?.()); } catch { /* ignore */ } }
-  client = null;
+  clearTimeout(reconnectTimer);
+  if (sock) {
+    try { await sock.logout(); } catch { /* ignore */ }
+    try { sock.end?.(undefined); } catch { /* ignore */ }
+  }
+  sock = null;
+  await clearSession().catch(() => {});
   state = { qr: null, connected: false, me: null, starting: false, error: null };
   return status();
 }
@@ -102,43 +224,72 @@ async function disconnect() {
 function status() {
   return {
     enabled: config.whatsapp.enabled,
-    installed: (() => { try { require.resolve('@open-wa/wa-automate'); return true; } catch { return false; } })(),
+    installed: isInstalled(),
     connected: state.connected, starting: state.starting,
     qr: state.qr, me: state.me, error: state.error,
     bandNumber: config.whatsapp.bandNumber,
   };
 }
 
-// pairing no longer auto-starts at boot: a headless browser per deploy is heavy
-// and, without a scanned session, pointless. The user links it from Settings.
+// reconnect automatically at boot if a session was saved; otherwise wait for the
+// user to link from Settings (don't spin up a socket that only yields an unscanned QR)
 async function start() {
   if (!config.whatsapp.enabled) {
     console.log('[whatsapp] disabled (set ENABLE_WHATSAPP=true to activate)');
     return;
   }
-  console.log('[whatsapp] enabled — link the band phone from Settings → WhatsApp');
+  if (!isInstalled()) {
+    console.warn('[whatsapp] @whiskeysockets/baileys not installed — run: npm i');
+    return;
+  }
+  const row = await loadSessionRow().catch(() => null);
+  if (row) {
+    console.log('[whatsapp] restoring saved session…');
+    connect().catch(e => console.warn('[whatsapp] restore failed:', e.message));
+  } else {
+    console.log('[whatsapp] enabled — link the band phone from Settings → WhatsApp');
+  }
 }
 
-async function sendMessage(chatId, text) {
-  if (!client) throw new Error('WhatsApp client is not running');
-  return client.sendText(chatId, text);
-}
-
-// "0501234567" / "+972501234567" / "972501234567" -> "972501234567@c.us"
-function toChatId(phone) {
+// "0501234567" / "+972501234567" / "972501234567" -> "972501234567@s.whatsapp.net"
+function toJid(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
   if (!digits) throw new Error('מספר טלפון ריק');
   const intl = digits.startsWith('972') ? digits : digits.replace(/^0/, '972');
-  return `${intl}@c.us`;
+  return `${intl}@s.whatsapp.net`;
 }
 
 async function sendToNumber(phone, text) {
-  if (!client) {
-    throw new Error('וואטסאפ אינו מחובר — יש להפעיל ENABLE_WHATSAPP=true בשרת');
-  }
-  return client.sendText(toChatId(phone), text);
+  if (!sock || !state.connected) throw new Error('וואטסאפ אינו מחובר — יש לחבר מ"הגדרות"');
+  return sock.sendMessage(toJid(phone), { text });
 }
 
-const isReady = () => !!client;
+// send to a lead, preferring its WhatsApp chat id, falling back to phone1
+async function sendToLead(lead, text) {
+  if (!sock || !state.connected) throw new Error('וואטסאפ אינו מחובר — יש לחבר מ"הגדרות"');
+  const jid = (lead.source_ref && lead.source_ref.includes('@s.whatsapp.net'))
+    ? lead.source_ref
+    : toJid(lead.phone1);
+  await sock.sendMessage(jid, { text });
+  return jid;
+}
 
-module.exports = { start, connect, disconnect, status, sendMessage, sendToNumber, toChatId, isReady, handleIncoming };
+// quiet pino if present, else a no-op logger Baileys accepts
+function quietLogger() {
+  try {
+    const pino = require('pino');
+    return pino({ level: 'silent' });
+  } catch {
+    const noop = () => {};
+    const l = { level: 'silent', trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop };
+    l.child = () => l;
+    return l;
+  }
+}
+
+const isReady = () => !!sock && state.connected;
+
+module.exports = {
+  start, connect, disconnect, status,
+  sendToNumber, sendToLead, toJid, isReady, handleIncoming,
+};

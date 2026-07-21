@@ -94,6 +94,7 @@ function seed() {
     calendar_links: [],
     calendar_events: [],
     whatsapp_messages: [],
+    whatsapp_sessions: [],
     otp_codes: [],
     reset_tokens: [],
   };

@@ -216,9 +216,12 @@ async function fullContract(contract) {
   if (base_price !== contract.base_price || final_price !== contract.final_price) {
     contract = await db.update('contracts', contract.id, { base_price, final_price }) || contract;
   }
-  let mgmtSig = null;
-  if (contract.management_signature_id) {
-    mgmtSig = await db.get('management_signatures', contract.management_signature_id);
+  // up to two management signatories on the band side
+  const mgmtSigs = [];
+  for (const sigId of [contract.management_signature_id, contract.management_signature_id_2]) {
+    if (!sigId) continue;
+    const s = await db.get('management_signatures', sigId);
+    if (s) mgmtSigs.push({ id: s.id, name: s.name, image_data: s.image_data });
   }
   const vars = buildVars(contract, lead);
   const header = contract.header || {};
@@ -239,7 +242,8 @@ async function fullContract(contract) {
     language: contract.language || 'he',
     direction: contract.direction || 'rtl',
     require_client_signature: contract.require_client_signature !== false,
-    management_signature: mgmtSig && { id: mgmtSig.id, name: mgmtSig.name, image_data: mgmtSig.image_data },
+    management_signatures: mgmtSigs,
+    management_signature: mgmtSigs[0] || null, // back-compat
   };
 }
 
@@ -261,6 +265,19 @@ authed.post('/templates', async (req, res) => {
     name, data: req.body?.data || {}, created_by: req.user.id,
   });
   res.status(201).json({ template });
+});
+
+authed.patch('/templates/:tid', async (req, res) => {
+  const patch = {};
+  if ('name' in (req.body || {})) {
+    const name = (req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'שם התבנית חובה' });
+    patch.name = name;
+  }
+  if ('data' in (req.body || {})) patch.data = req.body.data || {};
+  const template = await db.update('contract_templates', req.params.tid, patch);
+  if (!template) return res.status(404).json({ error: 'התבנית לא נמצאה' });
+  res.json({ template });
 });
 
 authed.delete('/templates/:tid', async (req, res) => {
@@ -319,7 +336,8 @@ authed.patch('/:id', async (req, res) => {
   if (!c) return res.status(404).json({ error: 'חוזה לא נמצא' });
   const patch = {};
   for (const f of ['title', 'body_html', 'header', 'sections', 'fields', 'extra_fields',
-    'language', 'direction', 'require_client_signature', 'selected_options', 'status', 'management_signature_id',
+    'language', 'direction', 'require_client_signature', 'selected_options', 'status',
+    'management_signature_id', 'management_signature_id_2',
     'vat_mode', 'vat_rate', 'discount_type', 'discount_value']) {
     if (f in (req.body || {})) patch[f] = req.body[f];
   }
@@ -331,7 +349,7 @@ authed.patch('/:id', async (req, res) => {
   }
   // base_price is derived in fullContract() from the lead's quoted price — it is
   // deliberately not settable here, so there is one source of truth.
-  if (patch.management_signature_id && !c.management_signed_at) {
+  if ((patch.management_signature_id || patch.management_signature_id_2) && !c.management_signed_at) {
     patch.management_signed_at = new Date().toISOString();
   }
   const updated = await db.update('contracts', req.params.id, patch);
@@ -478,7 +496,7 @@ portal.post('/:token/sign', async (req, res) => {
     client_signature: hasSig ? signature : null,
     client_signer_name: signer_name.trim(),
     client_signed_at: new Date().toISOString(),
-    status: c.management_signature_id ? 'completed' : 'client_signed',
+    status: (c.management_signature_id || c.management_signature_id_2) ? 'completed' : 'client_signed',
   });
   if (c.lead_id) {
     await db.insert('lead_updates', {
