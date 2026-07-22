@@ -131,7 +131,10 @@ router.get('/integrations', async (req, res) => {
 });
 
 // ---- WhatsApp linking (scan the QR from the band phone to connect) ----
-router.get('/whatsapp', (req, res) => res.json(whatsapp.status()));
+router.get('/whatsapp', (req, res) => {
+  whatsapp.ensureLive(); // revive a saved session if the socket dropped (no re-scan)
+  res.json(whatsapp.status());
+});
 router.post('/whatsapp/connect', requireAdmin, async (req, res) => {
   try { res.json(await whatsapp.connect()); }
   catch (e) { res.status(400).json({ error: e.message }); }

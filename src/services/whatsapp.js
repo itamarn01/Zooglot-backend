@@ -89,55 +89,81 @@ async function useDbAuthState() {
 }
 
 // ---- incoming messages → leads ----
-function extractText(m) {
-  const msg = m.message;
+// unwrap ephemeral / view-once envelopes, then read the text out of any of the
+// text-bearing message types
+function extractText(msg) {
   if (!msg) return '';
-  return msg.conversation
-    || msg.extendedTextMessage?.text
-    || msg.imageMessage?.caption
-    || msg.videoMessage?.caption
-    || msg.documentMessage?.caption
+  const inner = msg.ephemeralMessage?.message
+    || msg.viewOnceMessage?.message
+    || msg.viewOnceMessageV2?.message
+    || msg.documentWithCaptionMessage?.message
+    || msg;
+  return inner.conversation
+    || inner.extendedTextMessage?.text
+    || inner.imageMessage?.caption
+    || inner.videoMessage?.caption
+    || inner.documentMessage?.caption
+    || inner.buttonsResponseMessage?.selectedDisplayText
+    || inner.listResponseMessage?.title
     || '';
 }
 
 async function handleIncoming(m) {
-  if (!m.message || m.key?.fromMe) return;
   const remoteJid = m.key?.remoteJid || '';
-  // skip groups, status broadcasts and system chats
-  if (!remoteJid.endsWith('@s.whatsapp.net')) return;
-  const body = extractText(m).trim();
+  if (!m.message || m.key?.fromMe) return;
+  // accept only 1:1 personal chats — skip groups, status, broadcasts, newsletters
+  if (/@(g\.us|newsletter|broadcast)$/.test(remoteJid) || remoteJid === 'status@broadcast') return;
+  if (!remoteJid) return;
+
+  const body = extractText(m.message).trim();
   if (!body) return;
 
   const waId = m.key.id || null;
-  if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe
+  try {
+    if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe
+  } catch { /* dedupe is best-effort */ }
 
-  const fromNumber = remoteJid.replace(/@.*$/, '');
+  const fromNumber = remoteJid.replace(/@.*$/, '').replace(/:.*$/, '');
   const pushName = m.pushName || null;
 
-  let lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: remoteJid } }))[0];
-  if (!lead) {
-    lead = await db.insert('leads', {
-      name: `וואטסאפ: ${pushName || fromNumber}`,
-      contact_name: pushName || null,
-      phone1: fromNumber.replace(/^972/, '0'),
-      stage: 'לקוח חדש ידני',
-      sale_status: 'open',
-      next_action: 'עוד פרטים',
-      source: 'whatsapp',
-      source_ref: remoteJid,
-      first_contact_date: new Date().toISOString().slice(0, 10),
-    });
+  // create/attach the lead FIRST so a downstream write failure can't lose it
+  let lead;
+  try {
+    lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: remoteJid } }))[0];
+    if (!lead) {
+      lead = await db.insert('leads', {
+        name: pushName || fromNumber,
+        contact_name: pushName || null,
+        phone1: fromNumber.replace(/^972/, '0'),
+        stage: 'לקוח חדש ידני',
+        sale_status: 'open',
+        next_action: 'עוד פרטים',
+        source: 'whatsapp',
+        source_ref: remoteJid,
+        first_contact_date: new Date().toISOString().slice(0, 10),
+      });
+      console.log(`[whatsapp] NEW lead ${lead.id} from ${fromNumber} (${pushName || '—'})`);
+    }
+  } catch (e) {
+    console.warn('[whatsapp] lead upsert failed:', e.message);
+    return;
   }
 
-  await db.insert('whatsapp_messages', {
-    wa_chat_id: remoteJid, wa_message_id: waId,
-    from_number: fromNumber, from_name: pushName,
-    body, lead_id: lead.id, direction: 'in',
-  });
-  await db.insert('lead_updates', {
-    lead_id: lead.id, author_id: null, kind: 'system',
-    body: `📱 וואטסאפ נכנס:\n${body}`,
-  });
+  try {
+    await db.insert('whatsapp_messages', {
+      wa_chat_id: remoteJid, wa_message_id: waId,
+      from_number: fromNumber, from_name: pushName,
+      body, lead_id: lead.id, direction: 'in',
+    });
+  } catch (e) { console.warn('[whatsapp] message store failed:', e.message); }
+
+  try {
+    await db.insert('lead_updates', {
+      lead_id: lead.id, author_id: null, kind: 'system',
+      body: `📱 וואטסאפ נכנס:\n${body}`,
+    });
+  } catch (e) { console.warn('[whatsapp] update store failed:', e.message); }
+
   console.log(`[whatsapp] in from ${fromNumber} -> lead ${lead.id}`);
 }
 
@@ -184,14 +210,17 @@ async function connect() {
     if (connection === 'close') {
       state.connected = false; state.starting = false; state.qr = null;
       const code = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = code === DisconnectReason.loggedOut;
       sock = null;
-      if (loggedOut) {
+      if (code === DisconnectReason.loggedOut) {
         await clearSession().catch(() => {});
         state.error = 'החיבור נותק (Logged out) — יש לסרוק שוב';
         console.warn('[whatsapp] logged out — session cleared');
+      } else if (code === DisconnectReason.connectionReplaced) {
+        // the same session was opened elsewhere; reconnecting would fight it
+        state.error = 'נפתח חיבור וואטסאפ במקום אחר';
+        console.warn('[whatsapp] connection replaced elsewhere');
       } else {
-        // transient drop → auto-reconnect
+        // transient drop → auto-reconnect with the saved session (no re-scan)
         console.warn('[whatsapp] connection closed, reconnecting…', code || '');
         reconnectTimer = setTimeout(() => connect().catch(e => console.warn('[whatsapp] reconnect failed:', e.message)), 3000);
       }
@@ -229,6 +258,17 @@ function status() {
     qr: state.qr, me: state.me, error: state.error,
     bandNumber: config.whatsapp.bandNumber,
   };
+}
+
+// Self-heal: if WhatsApp is enabled and a session was saved but the socket is
+// not live (e.g. after a Railway restart or a silent drop), reconnect without a
+// re-scan. Fire-and-forget — callers just read status() a moment later.
+async function ensureLive() {
+  if (!config.whatsapp.enabled || !isInstalled()) return;
+  if (sock || state.starting) return;
+  const row = await loadSessionRow().catch(() => null);
+  if (!row) return; // never linked → needs a QR scan, don't auto-start
+  connect().catch(e => console.warn('[whatsapp] ensureLive failed:', e.message));
 }
 
 // reconnect automatically at boot if a session was saved; otherwise wait for the
@@ -290,6 +330,6 @@ function quietLogger() {
 const isReady = () => !!sock && state.connected;
 
 module.exports = {
-  start, connect, disconnect, status,
+  start, connect, disconnect, status, ensureLive,
   sendToNumber, sendToLead, toJid, isReady, handleIncoming,
 };
