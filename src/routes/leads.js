@@ -161,15 +161,28 @@ router.post('/:id/messages', async (req, res) => {
   if (!lead.phone1 && !(lead.source_ref || '').includes('@')) {
     return res.status(400).json({ error: 'אין מספר טלפון לליד' });
   }
-  let jid;
-  try { jid = await whatsapp.sendToLead(lead, body); }
+  let sent;
+  try { sent = await whatsapp.sendToLead(lead, body); }
   catch (e) { return res.status(400).json({ error: e.message }); }
 
-  const message = await db.insert('whatsapp_messages', {
-    wa_chat_id: jid, wa_message_id: null,
-    from_number: null, from_name: req.user.full_name || req.user.email,
-    body, lead_id: lead.id, direction: 'out',
-  });
+  // Baileys also echoes our own send back via messages.upsert (fromMe) — store
+  // the message id here so that echo dedupes against this row instead of doubling
+  const waId = sent?.id || null;
+  if (waId) {
+    const existing = await db.getBy('whatsapp_messages', 'wa_message_id', waId);
+    if (existing) return res.status(201).json({ message: existing });
+  }
+  let message;
+  try {
+    message = await db.insert('whatsapp_messages', {
+      wa_chat_id: sent?.jid || null, wa_message_id: waId,
+      from_number: null, from_name: req.user.full_name || req.user.email,
+      body, lead_id: lead.id, direction: 'out',
+    });
+  } catch {
+    // the echo won the race and inserted first — return that row
+    message = waId ? await db.getBy('whatsapp_messages', 'wa_message_id', waId) : null;
+  }
   res.status(201).json({ message });
 });
 

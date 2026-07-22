@@ -138,7 +138,7 @@ async function resolvePhone(m) {
 
 async function handleIncoming(m) {
   const remoteJid = m.key?.remoteJid || '';
-  if (!m.message || m.key?.fromMe) return;
+  if (!m.message) return;
   // accept only 1:1 personal chats — skip groups, status, broadcasts, newsletters
   if (/@(g\.us|newsletter|broadcast)$/.test(remoteJid) || remoteJid === 'status@broadcast') return;
   if (!remoteJid) return;
@@ -148,8 +148,27 @@ async function handleIncoming(m) {
 
   const waId = m.key.id || null;
   try {
-    if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe
+    if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe (also our own app-sends)
   } catch { /* dedupe is best-effort */ }
+
+  const fromMe = !!m.key.fromMe;
+
+  // A message the band sent from their own phone → mirror it as outgoing, but
+  // only onto a conversation we already track (don't spawn leads from the band's
+  // own outgoing/personal chats).
+  if (fromMe) {
+    const lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: remoteJid } }))[0];
+    if (!lead) return;
+    try {
+      await db.insert('whatsapp_messages', {
+        wa_chat_id: remoteJid, wa_message_id: waId,
+        from_number: null, from_name: null,
+        body, lead_id: lead.id, direction: 'out',
+      });
+      console.log(`[whatsapp] out (from phone) -> lead ${lead.id}`);
+    } catch (e) { console.warn('[whatsapp] outgoing store failed:', e.message); }
+    return;
+  }
 
   // real phone if we can resolve it; never store a @lid as the phone number
   const phone = await resolvePhone(m);
@@ -339,13 +358,14 @@ async function sendToNumber(phone, text) {
 }
 
 // send to a lead: reply straight to the stored WhatsApp chat id (works for both
-// @s.whatsapp.net and @lid chats), falling back to the phone number
+// @s.whatsapp.net and @lid chats), falling back to the phone number.
+// Returns { jid, id } — id lets the caller dedupe the echo Baileys emits.
 async function sendToLead(lead, text) {
   if (!sock || !state.connected) throw new Error('וואטסאפ אינו מחובר — יש לחבר מ"הגדרות"');
   const ref = lead.source_ref || '';
   const jid = /@(s\.whatsapp\.net|lid)$/.test(ref) ? ref : toJid(lead.phone1);
-  await sock.sendMessage(jid, { text });
-  return jid;
+  const sent = await sock.sendMessage(jid, { text });
+  return { jid, id: sent?.key?.id || null };
 }
 
 // quiet pino if present, else a no-op logger Baileys accepts
