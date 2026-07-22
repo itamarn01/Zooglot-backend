@@ -108,6 +108,34 @@ function extractText(msg) {
     || '';
 }
 
+// a phone-number JID looks like 9725...@s.whatsapp.net; a @lid is WhatsApp's
+// privacy identifier and is NOT a phone number
+function pnFromJid(jid) {
+  if (typeof jid !== 'string' || !jid.endsWith('@s.whatsapp.net')) return null;
+  const n = jid.replace(/@.*$/, '').replace(/:.*$/, '').replace(/\D/g, '');
+  return n || null;
+}
+
+// resolve the sender's real phone number even when the chat is addressed by @lid
+async function resolvePhone(m) {
+  const key = m.key || {};
+  // WhatsApp/Baileys expose the phone-number JID alongside the @lid in several places
+  for (const j of [key.remoteJid, key.remoteJidAlt, key.participant, key.participantAlt, key.senderPn, key.participantPn]) {
+    const n = pnFromJid(j);
+    if (n) return n;
+  }
+  // last resort: ask the LID→PN mapping if this build has one
+  const jid = key.remoteJid;
+  if (jid && jid.endsWith('@lid')) {
+    try {
+      const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid);
+      const n = pnFromJid(pn);
+      if (n) return n;
+    } catch { /* mapping unavailable — leave the phone blank rather than a LID */ }
+  }
+  return null;
+}
+
 async function handleIncoming(m) {
   const remoteJid = m.key?.remoteJid || '';
   if (!m.message || m.key?.fromMe) return;
@@ -123,7 +151,10 @@ async function handleIncoming(m) {
     if (waId && await db.getBy('whatsapp_messages', 'wa_message_id', waId)) return; // dedupe
   } catch { /* dedupe is best-effort */ }
 
-  const fromNumber = remoteJid.replace(/@.*$/, '').replace(/:.*$/, '');
+  // real phone if we can resolve it; never store a @lid as the phone number
+  const phone = await resolvePhone(m);
+  const localPhone = phone ? phone.replace(/^972/, '0') : null;
+  const fromNumber = phone || remoteJid.replace(/@.*$/, '');
   const pushName = m.pushName || null;
 
   // create/attach the lead FIRST so a downstream write failure can't lose it
@@ -132,17 +163,20 @@ async function handleIncoming(m) {
     lead = (await db.list('leads', { filters: { source: 'whatsapp', source_ref: remoteJid } }))[0];
     if (!lead) {
       lead = await db.insert('leads', {
-        name: pushName || fromNumber,
+        name: pushName || localPhone || 'לקוח וואטסאפ',
         contact_name: pushName || null,
-        phone1: fromNumber.replace(/^972/, '0'),
+        phone1: localPhone, // null rather than a @lid — a real number or nothing
         stage: 'לקוח חדש ידני',
         sale_status: 'open',
         next_action: 'עוד פרטים',
         source: 'whatsapp',
-        source_ref: remoteJid,
+        source_ref: remoteJid, // thread key (may be @s.whatsapp.net or @lid)
         first_contact_date: new Date().toISOString().slice(0, 10),
       });
       console.log(`[whatsapp] NEW lead ${lead.id} from ${fromNumber} (${pushName || '—'})`);
+    } else if (!lead.phone1 && localPhone) {
+      // backfill the phone once we can resolve it
+      try { await db.update('leads', lead.id, { phone1: localPhone }); lead.phone1 = localPhone; } catch { /* non-critical */ }
     }
   } catch (e) {
     console.warn('[whatsapp] lead upsert failed:', e.message);
@@ -304,12 +338,12 @@ async function sendToNumber(phone, text) {
   return sock.sendMessage(toJid(phone), { text });
 }
 
-// send to a lead, preferring its WhatsApp chat id, falling back to phone1
+// send to a lead: reply straight to the stored WhatsApp chat id (works for both
+// @s.whatsapp.net and @lid chats), falling back to the phone number
 async function sendToLead(lead, text) {
   if (!sock || !state.connected) throw new Error('וואטסאפ אינו מחובר — יש לחבר מ"הגדרות"');
-  const jid = (lead.source_ref && lead.source_ref.includes('@s.whatsapp.net'))
-    ? lead.source_ref
-    : toJid(lead.phone1);
+  const ref = lead.source_ref || '';
+  const jid = /@(s\.whatsapp\.net|lid)$/.test(ref) ? ref : toJid(lead.phone1);
   await sock.sendMessage(jid, { text });
   return jid;
 }
