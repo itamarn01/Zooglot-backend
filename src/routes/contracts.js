@@ -121,6 +121,38 @@ function resolveFieldList(defs, lead) {
   }));
 }
 
+// Merge guard for CRM saves: carry over the stored value of any client-editable
+// custom field whose incoming value is empty, so a stale editor copy can never
+// erase what the client filled in through the portal. Matched by field key
+// within the same section id (falling back to key alone for legacy sections).
+function keepFilledValues(incoming, stored) {
+  const storedByKey = new Map();
+  for (const s of (stored || [])) {
+    if (s?.type !== 'fields') continue;
+    for (const it of (s.items || [])) {
+      if (!it?.key) continue;
+      storedByKey.set(`${s.id}::${it.key}`, it);
+      if (!storedByKey.has(it.key)) storedByKey.set(it.key, it);
+    }
+  }
+  if (!storedByKey.size) return incoming;
+
+  return (incoming || []).map((s) => {
+    if (s?.type !== 'fields' || !Array.isArray(s.items)) return s;
+    return {
+      ...s,
+      items: s.items.map((it) => {
+        if (!it?.key || it.source === 'lead' || !it.client_editable) return it;
+        const incomingVal = it.value;
+        if (incomingVal !== '' && incomingVal != null) return it; // deliberate value → respect it
+        const prev = storedByKey.get(`${s.id}::${it.key}`) || storedByKey.get(it.key);
+        if (!prev || prev.value === '' || prev.value == null) return it;
+        return { ...it, value: prev.value };
+      }),
+    };
+  });
+}
+
 // build the {{variable}} substitution map (lead fields + fill-in fields + legacy extras)
 function buildVars(contract, lead) {
   const fieldVars = Object.fromEntries(resolveFieldList(fieldDefs(contract), lead).map(f => [f.key, f.value]));
@@ -341,6 +373,16 @@ authed.patch('/:id', async (req, res) => {
     'vat_mode', 'vat_rate', 'discount_type', 'discount_value']) {
     if (f in (req.body || {})) patch[f] = req.body[f];
   }
+  // Never let a CRM save blank out a fill-in value the client already entered.
+  // The editor PATCHes its whole in-memory `sections` array, which can easily be
+  // stale (the client may have filled the form since the editor was opened), so
+  // an empty incoming value for a client-editable field is treated as "unchanged"
+  // and the stored value is kept. A non-empty value still overwrites, so the band
+  // can always correct a field deliberately.
+  if (patch.sections) patch.sections = keepFilledValues(patch.sections, c.sections);
+  if (patch.fields) patch.fields = keepFilledValues([{ type: 'fields', items: patch.fields }],
+    [{ type: 'fields', items: c.fields }])[0].items;
+
   if ('package_id' in (req.body || {})) {
     const pkg = await packageWithItems(req.body.package_id);
     patch.package_id = pkg?.id || null;
