@@ -91,8 +91,8 @@ function buildPrice(contract, subtotal) {
 // lead columns a client-editable field may write back to (whitelist — guards
 // against a poisoned contract writing arbitrary columns from the public portal)
 const CLIENT_WRITABLE_LEAD_FIELDS = [
-  'contact_name', 'email', 'phone1', 'phone2', 'event_date', 'event_location',
-  'event_type', 'id_number', 'address',
+  'contact_name', 'groom_name', 'bride_name', 'email', 'phone1', 'phone2',
+  'event_date', 'event_location', 'event_type', 'id_number', 'address',
 ];
 
 // gather all fill-in field definitions — from every 'fields' section plus the
@@ -160,6 +160,7 @@ function buildVars(contract, lead) {
   return {
     ...extraVars, ...fieldVars,
     name: lead?.name, contact_name: lead?.contact_name, event_date: lead?.event_date,
+    groom_name: lead?.groom_name, bride_name: lead?.bride_name,
     event_location: lead?.event_location, event_type: lead?.event_type,
     email: lead?.email, phone1: lead?.phone1, phone2: lead?.phone2,
     id_number: lead?.id_number, address: lead?.address,

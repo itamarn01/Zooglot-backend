@@ -22,6 +22,8 @@ const HEAR = ['Instagram', 'Youtube', 'ניגנתם אצל חברים', 'המל�
 const LEAD_TARGETS = [
   { key: 'name', label: 'שם', type: 'text', required: true },
   { key: 'contact_name', label: 'איש קשר', type: 'text' },
+  { key: 'groom_name', label: 'שם החתן', type: 'text' },
+  { key: 'bride_name', label: 'שם הכלה', type: 'text' },
   { key: 'relation', label: 'קרבה', type: 'select' },
   { key: 'event_type', label: 'סוג אירוע', type: 'select' },
   { key: 'event_date', label: 'תאריך אירוע', type: 'date' },
@@ -62,6 +64,8 @@ const ALIASES = {
   name: 'name', 'שם': 'name', 'item name': 'name', 'שם מלא': 'name', 'שם האירוע': 'name',
   contact: 'contact_name', 'איש קשר': 'contact_name', 'contact name': 'contact_name',
   'שם איש קשר': 'contact_name',
+  'שם חתן': 'groom_name', 'שם החתן': 'groom_name', 'groom': 'groom_name', 'groom name': 'groom_name',
+  'שם כלה': 'bride_name', 'שם הכלה': 'bride_name', 'bride': 'bride_name', 'bride name': 'bride_name',
   'קרבה': 'relation', relation: 'relation', 'קרבה לאירוע': 'relation',
   'סוג אירוע': 'event_type', 'event type': 'event_type',
   'event date': 'event_date', 'תאריך אירוע': 'event_date', 'תאריך האירוע': 'event_date', date: 'event_date',
@@ -269,15 +273,6 @@ router.post('/leads', async (req, res) => {
     try {
       const match = (match_strategy !== 'add') ? findMatch(data[match_field]) : null;
       if (match && match_strategy === 'skip') { skipped++; continue; }
-
-      // the DB refuses a LOST lead without a reason + competitor. Historical
-      // exports often leave those blank, so fill a clear placeholder rather than
-      // failing the row — the import is worthless if every LOST line errors.
-      const status = data.sale_status || defaultStatus;
-      if (status === 'lost') {
-        if (!data.lost_reason && !match?.lost_reason) data.lost_reason = 'יובא מ-Monday (לא צוינה סיבה)';
-        if (!data.lost_competitor && !match?.lost_competitor) data.lost_competitor = 'לא ידוע';
-      }
 
       let lead;
       if (match && match_strategy === 'update') {

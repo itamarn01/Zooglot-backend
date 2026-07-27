@@ -51,6 +51,8 @@ create table if not exists leads (
   -- identity
   name text not null,                      -- Name (שם הפריט)
   contact_name text,                       -- Contact (איש קשר ראשי)
+  groom_name text,                         -- שם החתן  ({{groom_name}})
+  bride_name text,                         -- שם הכלה  ({{bride_name}})
   -- event
   event_type text default 'חתונה',         -- סוג אירוע
   event_date date,                         -- Event date
@@ -83,7 +85,7 @@ create table if not exists leads (
   -- lifecycle dates
   first_contact_date date,                 -- תאריך התקשרות
   close_date date,                         -- תאריך סגירה
-  -- LOST (both required by app logic when sale_status='lost')
+  -- LOST (optional — recommended to fill, never enforced)
   lost_reason text,                        -- למה לא?
   lost_competitor text,                    -- מתחרה שזכה
   -- contract
@@ -103,13 +105,10 @@ create index if not exists leads_status_idx on leads (sale_status);
 create index if not exists leads_event_date_idx on leads (event_date);
 create index if not exists leads_owner_idx on leads (owner_id);
 
--- hard guard: moving to LOST requires reason + competitor
+-- keeps updated_at fresh. LOST reason/competitor are recommended but optional —
+-- historical imports genuinely don't have them, and guessing was worse than blank.
 create or replace function enforce_lost_fields() returns trigger as $$
 begin
-  if new.sale_status = 'lost'
-     and (coalesce(new.lost_reason,'') = '' or coalesce(new.lost_competitor,'') = '') then
-    raise exception 'Moving a lead to LOST requires lost_reason and lost_competitor';
-  end if;
   new.updated_at := now();
   return new;
 end $$ language plpgsql;

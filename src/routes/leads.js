@@ -7,7 +7,7 @@ const router = express.Router();
 router.use(requireAuth);
 
 const LEAD_FIELDS = [
-  'name','contact_name','event_type','event_date','event_location','relation',
+  'name','contact_name','groom_name','bride_name','event_type','event_date','event_location','relation',
   'owner_id','team','email','phone1','phone2','id_number','address','proposed_price','deposit_amount','stage',
   'sale_status','next_action','package_type','date_status','hear_about_us',
   'referrer','came_to_see_event','seen_at_date','seen_at_place',
@@ -21,11 +21,11 @@ const pickLead = (body) => {
   return out;
 };
 
-function lostGuard(current, patch) {
-  const merged = { ...current, ...patch };
-  if (merged.sale_status === 'lost' && (!merged.lost_reason || !merged.lost_competitor)) {
-    return 'העברה ל-LOST מחייבת "סיבת הפסד" ו"מתחרה שזכה"';
-  }
+// LOST reason + competitor are recommended, never required. Historical leads
+// genuinely don't have them, and forcing a value only produced invented data.
+// Kept as a function so the call sites stay unchanged (and a future soft warning
+// has an obvious home).
+function lostGuard() {
   return null;
 }
 
@@ -86,8 +86,12 @@ router.patch('/:id', async (req, res) => {
     const label = { open: 'צינור ראשי', win: 'WIN 🎉', lost: 'LOST' }[patch.sale_status] || patch.sale_status;
     await db.insert('lead_updates', {
       lead_id: lead.id, author_id: req.user.id, kind: 'system',
+      // reason/competitor are optional now — only mention the ones actually set
       body: `הסטטוס שונה ל-${label}` +
-        (patch.sale_status === 'lost' ? ` · סיבה: ${lead.lost_reason} · מתחרה: ${lead.lost_competitor}` : ''),
+        (patch.sale_status === 'lost'
+          ? [lead.lost_reason ? ` · סיבה: ${lead.lost_reason}` : '',
+            lead.lost_competitor ? ` · מתחרה: ${lead.lost_competitor}` : ''].join('')
+          : ''),
     });
   }
   res.json({ lead });

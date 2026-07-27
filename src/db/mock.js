@@ -41,12 +41,14 @@ function seed() {
 
   // demo leads mirroring the Monday board "מעקב זוגות"
   const L = (o) => ({
-    id: uuid(), contact_name: null, event_type: 'חתונה', event_date: null, event_location: null,
+    id: uuid(), contact_name: null, groom_name: null, bride_name: null,
+    event_type: 'חתונה', event_date: null, event_location: null,
     relation: null, owner_id: uYaniv, team: null, email: null, phone1: null, phone2: null,
     proposed_price: null, stage: 'לקוח משאלון', sale_status: 'open', next_action: 'עוד פרטים',
     package_type: 'STANDARD', date_status: null, hear_about_us: null, referrer: null,
     came_to_see_event: null, seen_at_date: null, seen_at_place: null,
     first_contact_date: null, close_date: null, lost_reason: null, lost_competitor: null,
+    contract_link: null, creation_log: null, last_updated_log: null,
     source: 'form', source_ref: null, created_by: uItamar,
     created_at: now(), updated_at: now(), ...o,
   });
