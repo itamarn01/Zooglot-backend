@@ -149,7 +149,16 @@ module.exports = {
       });
     }
     if (opts.limit) rows = rows.slice(0, opts.limit);
+    // mirror the Supabase driver's narrowed projection so both behave alike
+    if (opts.columns && opts.columns !== '*') {
+      const cols = opts.columns.split(',').map(c => c.trim()).filter(Boolean);
+      rows = rows.map(r => Object.fromEntries(cols.map(c => [c, r[c]])));
+    }
     return rows;
+  },
+
+  async count(name, filters = {}) {
+    return (await this.list(name, { filters })).length;
   },
 
   async get(name, id) {

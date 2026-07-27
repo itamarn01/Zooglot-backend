@@ -29,15 +29,28 @@ function lostGuard() {
   return null;
 }
 
+// The board only needs a COUNT of updates, never their text. Pulling every
+// message body (WhatsApp threads included) just to call .length made this the
+// heaviest query on the board by far, so ask only for lead_id. Both child
+// queries run in parallel — they don't depend on each other.
 async function attachChildren(leads) {
-  const contacts = await db.list('lead_contacts', {});
-  const updates = await db.list('lead_updates', {});
-  const byLead = (rows) => rows.reduce((m, r) => ((m[r.lead_id] = m[r.lead_id] || []).push(r), m), {});
-  const cMap = byLead(contacts), uMap = byLead(updates);
+  if (!leads.length) return [];
+  const [contacts, updateRefs] = await Promise.all([
+    db.list('lead_contacts', {}),
+    db.list('lead_updates', { columns: 'lead_id' }),
+  ]);
+  const cMap = new Map();
+  for (const c of contacts) {
+    if (!cMap.has(c.lead_id)) cMap.set(c.lead_id, []);
+    cMap.get(c.lead_id).push(c);
+  }
+  const uCount = new Map();
+  for (const u of updateRefs) uCount.set(u.lead_id, (uCount.get(u.lead_id) || 0) + 1);
+
   return leads.map(l => ({
     ...l,
-    contacts: cMap[l.id] || [],
-    updates_count: (uMap[l.id] || []).length,
+    contacts: cMap.get(l.id) || [],
+    updates_count: uCount.get(l.id) || 0,
   }));
 }
 

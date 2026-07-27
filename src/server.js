@@ -1,10 +1,15 @@
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const config = require('./config');
 const whatsapp = require('./services/whatsapp');
 
 const app = express();
+// The board ships every lead in one response — several MB once the history from
+// Monday is in. JSON gzips ~10:1, so this is the difference between a snappy
+// board and a slow one on a phone connection.
+app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '15mb' })); // signatures/avatars arrive as data URLs
 
