@@ -12,7 +12,7 @@ const LEAD_FIELDS = [
   'sale_status','next_action','package_type','date_status','hear_about_us',
   'referrer','came_to_see_event','seen_at_date','seen_at_place',
   'first_contact_date','close_date','lost_reason','lost_competitor',
-  'source','source_ref',
+  'source','source_ref','contract_link','creation_log','last_updated_log',
 ];
 
 const pickLead = (body) => {

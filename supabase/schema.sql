@@ -86,10 +86,14 @@ create table if not exists leads (
   -- LOST (both required by app logic when sale_status='lost')
   lost_reason text,                        -- למה לא?
   lost_competitor text,                    -- מתחרה שזכה
+  -- contract
+  contract_link text,                      -- קישור לחוזה (historical links + auto-filled on send)
   -- ingestion
   source text not null default 'manual'    -- manual/form/webhook/whatsapp/voice/import
     check (source in ('manual','form','webhook','whatsapp','voice','import')),
   source_ref text,                         -- form id / wa chat id / monday item id
+  creation_log text,                       -- Monday "Creation Log" (free text: who + when)
+  last_updated_log text,                   -- Monday "Last Updated" (free text: who + when)
   -- bookkeeping
   created_by uuid references profiles(id),
   created_at timestamptz not null default now(),

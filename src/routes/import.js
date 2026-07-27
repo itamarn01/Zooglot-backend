@@ -31,6 +31,9 @@ const LEAD_TARGETS = [
   { key: 'phone1', label: 'טלפון 1', type: 'phone' },
   { key: 'phone2', label: 'טלפון 2', type: 'phone' },
   { key: 'proposed_price', label: 'מחיר שהוצע', type: 'number' },
+  { key: 'deposit_amount', label: 'מקדמה', type: 'number' },
+  { key: 'id_number', label: 'ת"ז', type: 'text' },
+  { key: 'address', label: 'כתובת', type: 'text' },
   { key: 'stage', label: 'שלב', type: 'text' },
   { key: 'sale_status', label: 'סטאטוס מכירה', type: 'status' },
   { key: 'next_action', label: 'פעולה הבאה', type: 'text' },
@@ -46,7 +49,10 @@ const LEAD_TARGETS = [
   { key: 'lost_competitor', label: 'מתחרה שזכה', type: 'text' },
   { key: 'package_type', label: 'סוג חבילה', type: 'text' },
   { key: 'date_status', label: 'סטטוס תאריך', type: 'text' },
+  { key: 'contract_link', label: 'קישור לחוזה', type: 'link' },
   { key: 'source_ref', label: 'מזהה חיצוני (Item ID)', type: 'text' },
+  { key: 'creation_log', label: 'Creation Log', type: 'text' },
+  { key: 'last_updated_log', label: 'Last Updated', type: 'text' },
   { key: 'notes', label: 'הערות (יתווספו כעדכון)', type: 'notes' },
 ];
 
@@ -55,15 +61,21 @@ const norm = (s) => String(s || '').trim().toLowerCase().replace(/[?:.]/g, '').r
 const ALIASES = {
   name: 'name', 'שם': 'name', 'item name': 'name', 'שם מלא': 'name', 'שם האירוע': 'name',
   contact: 'contact_name', 'איש קשר': 'contact_name', 'contact name': 'contact_name',
+  'שם איש קשר': 'contact_name',
   'קרבה': 'relation', relation: 'relation', 'קרבה לאירוע': 'relation',
   'סוג אירוע': 'event_type', 'event type': 'event_type',
   'event date': 'event_date', 'תאריך אירוע': 'event_date', 'תאריך האירוע': 'event_date', date: 'event_date',
   'event location': 'event_location', 'מיקום האירוע': 'event_location', 'מיקום': 'event_location', location: 'event_location',
+  'מקום האירוע': 'event_location',
   'בטיפול': 'owner_id', owner: 'owner_id', 'assigned to': 'owner_id',
   email: 'email', 'מייל': 'email', 'אימייל': 'email', mail: 'email',
   'טלפון 1': 'phone1', 'טלפון': 'phone1', phone: 'phone1', 'phone 1': 'phone1', 'טלפון1': 'phone1',
   'טלפון 2': 'phone2', 'phone 2': 'phone2', 'טלפון2': 'phone2',
   'מחיר שהוצע': 'proposed_price', 'proposed price': 'proposed_price', price: 'proposed_price', 'מחיר': 'proposed_price',
+  'מקדמה': 'deposit_amount', deposit: 'deposit_amount', 'מקדמה לשריון': 'deposit_amount',
+  'ת"ז': 'id_number', 'תז': 'id_number', 'ת״ז': 'id_number', 'תעודת זהות': 'id_number',
+  'תז המזמין': 'id_number', 'ת"ז המזמין': 'id_number', 'id number': 'id_number',
+  'כתובת': 'address', address: 'address', 'כתובת המזמין': 'address',
   'שלב': 'stage', stage: 'stage',
   'סטאטוס מכירה': 'sale_status', 'סטטוס מכירה': 'sale_status', 'sale status': 'sale_status', status: 'sale_status',
   'פעולה הבאה': 'next_action', 'next action': 'next_action',
@@ -80,7 +92,10 @@ const ALIASES = {
   'סוג חבילה': 'package_type',
   'סטטוס תאריך': 'date_status',
   'item id': 'source_ref', 'item id (auto generated)': 'source_ref',
-  'הערות': 'notes', notes: 'notes',
+  'חוזה': 'contract_link', 'קישור לחוזה': 'contract_link', contract: 'contract_link', 'contract link': 'contract_link',
+  'creation log': 'creation_log', 'יומן יצירה': 'creation_log',
+  'last updated': 'last_updated_log', 'עודכן לאחרונה': 'last_updated_log',
+  'הערות': 'notes', notes: 'notes', 'הערות לחוזה': 'notes',
 };
 
 function autoMap(columns, targets) {
@@ -117,6 +132,15 @@ function toNumber(v) {
   const n = Number(String(v).replace(/[^\d.-]/g, ''));
   return isNaN(n) ? null : n;
 }
+// Monday's file/link columns often export as "label.jpg, https://…" or hold
+// several links at once. Keep the first real URL when there is one, otherwise
+// keep the raw text so nothing the band typed by hand is silently dropped.
+function toLink(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim();
+  const m = s.match(/https?:\/\/\S+/);
+  return m ? m[0] : s;
+}
 function toStatus(v) {
   const s = norm(v);
   if (['win', 'won', 'זכייה', 'נסגר', 'סגור'].includes(s)) return 'win';
@@ -137,6 +161,7 @@ function coerce(key, raw, profileByName) {
     case 'phone': return toPhone(raw);
     case 'number': return toNumber(raw);
     case 'status': return toStatus(raw);
+    case 'link': return toLink(raw);
     case 'owner': {
       const p = profileByName(raw);
       return p ? p.id : undefined; // unknown owner → leave unset (keep raw name in team if desired)
@@ -197,9 +222,15 @@ router.get('/fields', async (req, res) => {
 });
 
 // ---- commit mapped rows as leads ----
-// body: { rows, mapping: {sourceCol: targetKey}, match_strategy: 'add'|'skip'|'update', match_field: 'name'|'source_ref' }
+// body: { rows, mapping: {sourceCol: targetKey}, match_strategy: 'add'|'skip'|'update',
+//         match_field: 'name'|'source_ref', default_sale_status: 'open'|'win'|'lost' }
+// default_sale_status comes from the pipeline the user was viewing when they hit
+// import, so a WON export lands in WIN and a LOST export in LOST. A mapped
+// "סטאטוס מכירה" column still wins over it, per row.
 router.post('/leads', async (req, res) => {
   const { rows = [], mapping = {}, match_strategy = 'add', match_field = 'name' } = req.body || {};
+  const defaultStatus = ['open', 'win', 'lost'].includes(req.body?.default_sale_status)
+    ? req.body.default_sale_status : 'open';
   if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'אין שורות לייבוא' });
   if (!Object.values(mapping).includes('name')) return res.status(400).json({ error: 'חובה למפות עמודה לשדה "שם"' });
 
@@ -239,13 +270,22 @@ router.post('/leads', async (req, res) => {
       const match = (match_strategy !== 'add') ? findMatch(data[match_field]) : null;
       if (match && match_strategy === 'skip') { skipped++; continue; }
 
+      // the DB refuses a LOST lead without a reason + competitor. Historical
+      // exports often leave those blank, so fill a clear placeholder rather than
+      // failing the row — the import is worthless if every LOST line errors.
+      const status = data.sale_status || defaultStatus;
+      if (status === 'lost') {
+        if (!data.lost_reason && !match?.lost_reason) data.lost_reason = 'יובא מ-Monday (לא צוינה סיבה)';
+        if (!data.lost_competitor && !match?.lost_competitor) data.lost_competitor = 'לא ידוע';
+      }
+
       let lead;
       if (match && match_strategy === 'update') {
         lead = await db.update('leads', match.id, { ...data, updated_at: new Date().toISOString() });
         updated++;
       } else {
         lead = await db.insert('leads', {
-          sale_status: 'open', source: 'import', stage: 'לקוח חדש ידני',
+          sale_status: defaultStatus, source: 'import', stage: 'לקוח חדש ידני',
           next_action: 'עוד פרטים', event_type: 'חתונה',
           ...data,
           created_by: req.user.id,
