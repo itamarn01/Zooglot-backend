@@ -15,6 +15,13 @@ const LEAD_FIELDS = [
   'source','source_ref','contract_link','creation_log','last_updated_log',
 ];
 
+// Hebrew names for the merge audit line
+const CHILD_LABELS = {
+  lead_contacts: 'אנשי קשר', lead_updates: 'עדכונים', contracts: 'חוזים',
+  reminders: 'תזכורות', calendar_events: 'אירועי יומן',
+  whatsapp_messages: 'הודעות וואטסאפ', voice_notes: 'הקלטות', form_submissions: 'טפסים',
+};
+
 const pickLead = (body) => {
   const out = {};
   for (const f of LEAD_FIELDS) if (f in (body || {})) out[f] = body[f];
@@ -275,24 +282,33 @@ router.post('/merge', async (req, res) => {
   const err = lostGuard(primary, patch);
   if (err) return res.status(400).json({ error: err });
 
-  // move children
-  for (const c of await db.list('lead_contacts', { filters: { lead_id: dup.id } })) {
-    await db.update('lead_contacts', c.id, { lead_id: primary.id });
-  }
-  for (const u of await db.list('lead_updates', { filters: { lead_id: dup.id } })) {
-    await db.update('lead_updates', u.id, { lead_id: primary.id });
-  }
-  for (const c of await db.list('contracts', { filters: { lead_id: dup.id } })) {
-    await db.update('contracts', c.id, { lead_id: primary.id });
+  // Move EVERY child row before the duplicate is deleted. Anything left behind
+  // is destroyed (reminders / calendar_events cascade) or orphaned
+  // (whatsapp_messages / voice_notes / form_submissions are set null) — losing
+  // reminders and whole WhatsApp threads. Keep this list in step with every
+  // table that carries a lead_id.
+  const CHILD_TABLES = [
+    'lead_contacts', 'lead_updates', 'contracts', 'reminders',
+    'calendar_events', 'whatsapp_messages', 'voice_notes', 'form_submissions',
+  ];
+  const moved = {};
+  for (const t of CHILD_TABLES) {
+    const rows = await db.list(t, { filters: { lead_id: dup.id } });
+    if (!rows.length) continue;
+    await Promise.all(rows.map(r => db.update(t, r.id, { lead_id: primary.id })));
+    moved[t] = rows.length;
   }
 
   const lead = await db.update('leads', primary.id, patch);
   await db.remove('leads', dup.id);
   await db.insert('lead_updates', {
     lead_id: primary.id, author_id: req.user.id, kind: 'system',
-    body: `🔀 מוזג עם הליד "${dup.name}" (הכפיל נמחק)`,
+    body: `🔀 מוזג עם הליד "${dup.name}" (הכפיל נמחק)`
+      + (Object.keys(moved).length
+        ? ` · הועברו: ${Object.entries(moved).map(([t, n]) => `${CHILD_LABELS[t] || t} ${n}`).join(', ')}`
+        : ''),
   });
-  res.json({ lead });
+  res.json({ lead, moved });
 });
 
 // ---- competitors dropdown ----
