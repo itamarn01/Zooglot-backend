@@ -124,6 +124,16 @@ create table if not exists competitors (
 );
 
 -- multiple contacts per lead (אנשי קשר נוספים)
+-- phone numbers confirmed to be shared legitimately (one producer, many events),
+-- so the duplicate review stops flagging them. Team-wide, and undoable.
+create table if not exists duplicate_dismissals (
+  id uuid primary key default uuid_generate_v4(),
+  phone_key text not null unique,        -- normalised number (see phoneKey in phone.js)
+  note text,                             -- e.g. the producer's name, for context
+  dismissed_by uuid references profiles(id),
+  created_at timestamptz not null default now()
+);
+
 create table if not exists lead_contacts (
   id uuid primary key default uuid_generate_v4(),
   lead_id uuid not null references leads(id) on delete cascade,
@@ -360,6 +370,7 @@ alter table whatsapp_messages enable row level security;
 alter table whatsapp_sessions enable row level security;
 alter table invitations enable row level security;
 alter table competitors enable row level security;
+alter table duplicate_dismissals enable row level security;
 alter table otp_codes enable row level security;
 
 -- authenticated team members can do everything (single-tenant internal CRM)
@@ -370,7 +381,8 @@ begin
     'profiles','leads','lead_contacts','lead_updates','reminders','products','packages',
     'package_items','contracts','contract_templates','management_signatures','lead_forms',
     'form_submissions','voice_notes','calendar_links','calendar_events',
-    'whatsapp_messages','whatsapp_sessions','invitations','competitors']
+    'whatsapp_messages','whatsapp_sessions','invitations','competitors',
+    'duplicate_dismissals']
   loop
     execute format(
       'drop policy if exists team_all on %I; create policy team_all on %I

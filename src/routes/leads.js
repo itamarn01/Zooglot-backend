@@ -323,4 +323,32 @@ router.post('/meta/competitors', async (req, res) => {
   res.status(201).json({ competitor: await db.insert('competitors', { name }) });
 });
 
+// ---- duplicate review: phone numbers approved as "not a duplicate" ----
+// One producer books many weddings, so the same number legitimately appears on
+// several leads. Approving is a shared judgement about the number, so it lives
+// server-side rather than per-browser — and it is always reversible.
+router.get('/meta/duplicate-dismissals', async (req, res) => {
+  res.json({ dismissals: await db.list('duplicate_dismissals', { orderBy: 'created_at', asc: false }) });
+});
+
+router.post('/meta/duplicate-dismissals', async (req, res) => {
+  const phone_key = String(req.body?.phone_key || '').trim();
+  if (!phone_key) return res.status(400).json({ error: 'חסר מספר טלפון' });
+  const existing = await db.getBy('duplicate_dismissals', 'phone_key', phone_key);
+  if (existing) return res.json({ dismissal: existing });
+  const dismissal = await db.insert('duplicate_dismissals', {
+    phone_key,
+    note: (req.body?.note || '').trim() || null,
+    dismissed_by: req.user.id,
+  });
+  res.status(201).json({ dismissal });
+});
+
+// undo — the number goes back into the duplicate review
+router.delete('/meta/duplicate-dismissals/:phoneKey', async (req, res) => {
+  const existing = await db.getBy('duplicate_dismissals', 'phone_key', req.params.phoneKey);
+  if (existing) await db.remove('duplicate_dismissals', existing.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;
