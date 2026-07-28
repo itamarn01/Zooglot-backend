@@ -98,6 +98,7 @@ function seed() {
     whatsapp_messages: [],
     whatsapp_sessions: [],
     duplicate_dismissals: [],
+    form_views: [],
     otp_codes: [],
     reset_tokens: [],
   };
