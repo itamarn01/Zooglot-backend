@@ -81,7 +81,10 @@ authed.use(requireAuth);
 authed.get('/bindable-fields', (req, res) => res.json({ fields: BINDABLE_FIELDS }));
 
 authed.get('/', async (req, res) => {
-  res.json({ forms: await db.list('lead_forms', { orderBy: 'created_at', asc: false }) });
+  const forms = await db.list('lead_forms', { orderBy: 'created_at', asc: false });
+  // same enrichment as the public route, so the builder's preview matches what
+  // the client will actually see
+  res.json({ forms: forms.map(f => ({ ...f, fields: enrichFields(f.fields) })) });
 });
 
 authed.post('/', async (req, res) => {
@@ -127,13 +130,35 @@ function formLinks(form) {
   };
 }
 
+// A form stores a snapshot of its fields from when it was built, so forms saved
+// before a capability existed (English option labels, "other" free text,
+// conditional visibility) would never gain it. Re-attach the canonical metadata
+// by key at render time — the builder's own choices (label, description,
+// required) always win, only the behavioural bits are refreshed.
+function enrichFields(fields) {
+  return (fields || []).map((f) => {
+    const def = BINDABLE_FIELDS.find(b => b.key === f.key);
+    if (!def) return f;
+    // NB: `label` is deliberately untouched — the builder lets the band write
+    // the wording themselves (often already in the form's language), and
+    // replacing it with the generic default would undo their copy.
+    return {
+      ...f,
+      options: f.options || def.options,
+      options_en: def.options_en,
+      other_free_text: def.other_free_text,
+      show_when: def.show_when,
+    };
+  });
+}
+
 // ---------- public: render + submit ----------
 const publicRouter = express.Router();
 
 publicRouter.get('/:slug', async (req, res) => {
   const form = await db.getBy('lead_forms', 'slug', req.params.slug);
   if (!form || !form.active) return res.status(404).json({ error: 'הטופס לא נמצא' });
-  res.json({ form });
+  res.json({ form: { ...form, fields: enrichFields(form.fields) } });
 });
 
 publicRouter.post('/:slug/submit', async (req, res) => {
