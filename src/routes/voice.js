@@ -9,14 +9,60 @@ const { todayISO } = require('../lib/dates');
 const ai = require('../services/ai');
 const { requireAuth } = require('../middleware/auth');
 
+const config = require('../config');
+
 const router = express.Router();
-router.use(requireAuth);
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'voice');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const upload = multer({
   dest: UPLOAD_DIR,
   limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+// ---- share target for iOS ----------------------------------------------
+// Declared BEFORE requireAuth so it stays reachable: an iPhone Shortcut has no
+// session and authenticates with the per-user token from Settings instead.
+// iOS has no Web Share Target API, so this is the only route by which a
+// WhatsApp voice note can reach the app from the share sheet on an iPhone.
+router.post('/share', upload.single('audio'), async (req, res) => {
+  const token = req.get('X-Zooglot-Token') || req.query.token || req.body?.token;
+  if (!token) return res.status(401).json({ error: 'חסר טוקן שיתוף' });
+
+  const user = await db.getBy('profiles', 'voice_share_token', String(token));
+  if (!user) return res.status(401).json({ error: 'טוקן שיתוף לא תקין' });
+  if (!req.file) return res.status(400).json({ error: 'לא התקבל קובץ אודיו' });
+
+  let note = await db.insert('voice_notes', {
+    lead_id: null, audio_path: req.file.path,
+    transcript: null, extracted: null, status: 'pending', created_by: user.id,
+  });
+  try {
+    const transcript = await ai.transcribe(req.file.path, req.file.originalname, req.file.mimetype);
+    note = await db.update('voice_notes', note.id, { transcript, status: 'transcribed' });
+    const extracted = await ai.extractLeadFields(transcript);
+    note = await db.update('voice_notes', note.id, { extracted, status: 'extracted' });
+    // the Shortcut opens this: the app lands on the review screen with the
+    // fields already filled, so nothing is saved without a human seeing it
+    res.json({
+      ok: true,
+      id: note.id,
+      name: extracted?.name || extracted?.contact_name || 'ליד מהקלטה',
+      url: `${config.frontendUrl}/index.html#voice-note=${note.id}`,
+    });
+  } catch (e) {
+    await db.update('voice_notes', note.id, { status: 'failed' });
+    res.status(500).json({ error: `ניתוח ההקלטה נכשל: ${e.message}` });
+  }
+});
+
+router.use(requireAuth);
+
+// the app fetches the note the Shortcut created, to show the review screen
+router.get('/:id', async (req, res) => {
+  const note = await db.get('voice_notes', req.params.id);
+  if (!note) return res.status(404).json({ error: 'ניתוח קולי לא נמצא' });
+  res.json({ voice_note: note });
 });
 
 // Must stay in sync with LEAD_FIELDS_SPEC in services/ai.js — a field the model

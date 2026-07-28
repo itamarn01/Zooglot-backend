@@ -137,6 +137,31 @@ router.get('/integrations', async (req, res) => {
   });
 });
 
+// ---- iOS voice-share token ----
+// The iPhone Shortcut that posts a WhatsApp voice note cannot log in, so it
+// carries this token. Per-user, so a captured lead is credited to whoever shared
+// it, and regenerating revokes the previous one immediately.
+const shareInfo = (token) => ({
+  token: token || null,
+  endpoint: `${config.appUrl}/api/voice/share`,
+});
+
+router.get('/voice-share', async (req, res) => {
+  const me = await db.get('profiles', req.user.id);
+  res.json(shareInfo(me?.voice_share_token));
+});
+
+router.post('/voice-share', async (req, res) => {
+  const token = crypto.randomBytes(24).toString('base64url');
+  await db.update('profiles', req.user.id, { voice_share_token: token });
+  res.json(shareInfo(token));
+});
+
+router.delete('/voice-share', async (req, res) => {
+  await db.update('profiles', req.user.id, { voice_share_token: null });
+  res.json(shareInfo(null));
+});
+
 // ---- WhatsApp linking (scan the QR from the band phone to connect) ----
 router.get('/whatsapp', (req, res) => {
   // revive a saved session if the socket dropped (no re-scan). Never let this
