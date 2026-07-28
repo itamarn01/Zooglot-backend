@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db');
+const { todayISO } = require('../lib/dates');
 const whatsapp = require('../services/whatsapp');
 const { requireAuth } = require('../middleware/auth');
 
@@ -85,7 +86,7 @@ router.post('/', async (req, res) => {
   const lead = await db.insert('leads', {
     sale_status: 'open', source: 'manual', stage: 'לקוח חדש ידני',
     next_action: 'עוד פרטים', event_type: 'חתונה',
-    first_contact_date: new Date().toISOString().slice(0, 10),
+    first_contact_date: todayISO(),
     ...data,
     created_by: req.user.id,
   });

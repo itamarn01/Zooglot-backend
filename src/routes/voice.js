@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const db = require('../db');
+const { todayISO } = require('../lib/dates');
 const ai = require('../services/ai');
 const { requireAuth } = require('../middleware/auth');
 
@@ -67,7 +68,7 @@ router.post('/:id/apply', async (req, res) => {
       name: fields.name || fields.contact_name || 'ליד מהקלטה קולית',
       stage: 'לקוח חדש ידני', sale_status: 'open', next_action: 'עוד פרטים',
       event_type: 'חתונה',
-      first_contact_date: new Date().toISOString().slice(0, 10),
+      first_contact_date: todayISO(),
       ...fields,
       source: 'voice', source_ref: note.id, created_by: req.user.id,
     });

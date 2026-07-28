@@ -1,22 +1,50 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
+const { todayISO } = require('../lib/dates');
 const config = require('../config');
 const { requireAuth } = require('../middleware/auth');
 
-// Fields the form builder can bind to (columns of מעקב זוגות)
+// Fields the form builder can bind to (columns of מעקב זוגות).
+//
+// `options` are the values actually stored on the lead — always Hebrew, so the
+// board's chips/filters keep working whatever language the form is in.
+// `options_en` are display labels for English forms, in the SAME order, so an
+// English form shows "Bride" while the CRM still records "כלה".
+// `label_en` does the same for the field's own label.
+// `other_free_text` marks the select whose last option ("אחר") opens a free-text
+// box. `show_when` hides a field until another field has a given value.
 const BINDABLE_FIELDS = [
-  { key: 'name', label: 'שם מלא / שם האירוע', type: 'text' },
-  { key: 'contact_name', label: 'איש קשר', type: 'text' },
-  { key: 'relation', label: 'קרבה לאירוע', type: 'select', options: ['כלה', 'חתן', 'הורה', 'מפיק/ה', 'אחר'] },
-  { key: 'event_type', label: 'סוג אירוע', type: 'select', options: ['חתונה', 'בר/בת מצווה', 'אירוע חברה', 'אחר'] },
-  { key: 'event_date', label: 'תאריך האירוע', type: 'date' },
-  { key: 'event_location', label: 'מיקום האירוע', type: 'text' },
-  { key: 'email', label: 'אימייל', type: 'email' },
-  { key: 'phone1', label: 'טלפון', type: 'tel' },
-  { key: 'hear_about_us', label: 'איך שמעתם עלינו?', type: 'select', options: ['Instagram', 'Youtube', 'ניגנתם אצל חברים', 'המלצה', 'גוגל', 'אחר'] },
-  { key: 'referrer', label: 'מי המליץ?', type: 'text' },
-  { key: 'notes', label: 'הערות / ספרו לנו על האירוע', type: 'textarea' },
+  { key: 'name', label: 'שם מלא / שם האירוע', label_en: 'Full name / event name', type: 'text' },
+  { key: 'contact_name', label: 'איש קשר', label_en: 'Contact person', type: 'text' },
+  {
+    key: 'relation', label: 'קרבה לאירוע', label_en: 'Relation to the event', type: 'select',
+    options: ['כלה', 'חתן', 'הורה', 'מפיק/ה', 'אחר'],
+    options_en: ['Bride', 'Groom', 'Parent', 'Producer', 'Other'],
+    other_free_text: true,
+  },
+  {
+    key: 'event_type', label: 'סוג אירוע', label_en: 'Event type', type: 'select',
+    options: ['חתונה', 'בר/בת מצווה', 'אירוע חברה', 'אחר'],
+    options_en: ['Wedding', 'Bar/Bat Mitzvah', 'Corporate event', 'Other'],
+    other_free_text: true,
+  },
+  { key: 'event_date', label: 'תאריך האירוע', label_en: 'Event date', type: 'date' },
+  { key: 'event_location', label: 'מיקום האירוע', label_en: 'Event location', type: 'text' },
+  { key: 'email', label: 'אימייל', label_en: 'Email', type: 'email' },
+  { key: 'phone1', label: 'טלפון', label_en: 'Phone', type: 'tel' },
+  {
+    key: 'hear_about_us', label: 'איך שמעתם עלינו?', label_en: 'How did you hear about us?', type: 'select',
+    options: ['Instagram', 'Youtube', 'ניגנתם אצל חברים', 'המלצה', 'גוגל', 'אחר'],
+    options_en: ['Instagram', 'YouTube', 'You played at a friend\'s event', 'Recommendation', 'Google', 'Other'],
+    other_free_text: true,
+  },
+  {
+    key: 'referrer', label: 'מי המליץ?', label_en: 'Who recommended us?', type: 'text',
+    // only relevant once "המלצה" / "Recommendation" was picked
+    show_when: { field: 'hear_about_us', equals: 'המלצה' },
+  },
+  { key: 'notes', label: 'הערות / ספרו לנו על האירוע', label_en: 'Notes / tell us about the event', type: 'textarea' },
 ];
 
 async function createLeadFromPayload(payload, source, sourceRef) {
@@ -31,7 +59,7 @@ async function createLeadFromPayload(payload, source, sourceRef) {
     sale_status: 'open',
     next_action: 'עוד פרטים',
     event_type: 'חתונה',
-    first_contact_date: new Date().toISOString().slice(0, 10),
+    first_contact_date: todayISO(),
     ...known,
     source,
     source_ref: sourceRef || null,

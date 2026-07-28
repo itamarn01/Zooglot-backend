@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
+const { todayISO } = require('../lib/dates');
 const config = require('../config');
 const email = require('../services/email');
 const { requireAuth } = require('../middleware/auth');
@@ -172,7 +173,7 @@ function buildVars(contract, lead) {
     deposit: (lead && lead.deposit_amount != null && lead.deposit_amount !== '')
       ? lead.deposit_amount
       : Math.round((Number(contract.final_price) || 0) * 0.1),
-    today: new Date().toISOString().slice(0, 10),
+    today: todayISO(),
   };
 }
 
@@ -549,7 +550,7 @@ portal.post('/:token/sign', async (req, res) => {
       lead_id: c.lead_id, author_id: null, kind: 'system',
       body: `${hasSig ? '✍️ הלקוח חתם על ההצעה' : '✅ הלקוח אישר את ההצעה'} (${signer_name.trim()}) · לתשלום: ₪${buildPrice(updated, updated.final_price).total}`,
     });
-    await db.update('leads', c.lead_id, { sale_status: 'win', close_date: new Date().toISOString().slice(0, 10) });
+    await db.update('leads', c.lead_id, { sale_status: 'win', close_date: todayISO() });
   }
   res.json({ contract: await fullContract(updated) });
 });

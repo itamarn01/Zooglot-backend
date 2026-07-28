@@ -1,3 +1,9 @@
+// The band works in Israel; Railway runs the container in UTC. Pin the process
+// timezone so logs, cron-style ticks and any local-time formatting match the
+// clock the team actually reads. (Calendar dates additionally go through
+// lib/dates.js, since toISOString() is UTC no matter what TZ says.)
+process.env.TZ = process.env.TZ || 'Asia/Jerusalem';
+
 const path = require('path');
 const express = require('express');
 const cors = require('cors');

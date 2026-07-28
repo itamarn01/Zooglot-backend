@@ -8,6 +8,7 @@
 // messages become / attach to leads; the thread is viewable per lead.
 const config = require('../config');
 const db = require('../db');
+const { todayISO } = require('../lib/dates');
 
 let sock = null;
 let baileys = null;
@@ -190,7 +191,7 @@ async function handleIncoming(m) {
         next_action: 'עוד פרטים',
         source: 'whatsapp',
         source_ref: remoteJid, // thread key (may be @s.whatsapp.net or @lid)
-        first_contact_date: new Date().toISOString().slice(0, 10),
+        first_contact_date: todayISO(),
       });
       console.log(`[whatsapp] NEW lead ${lead.id} from ${fromNumber} (${pushName || '—'})`);
     } else if (!lead.phone1 && localPhone) {
