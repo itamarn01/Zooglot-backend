@@ -19,9 +19,13 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// Must stay in sync with LEAD_FIELDS_SPEC in services/ai.js — a field the model
+// extracts but that is missing here never reaches the lead.
 const LEAD_KEYS = [
-  'name','contact_name','relation','event_type','event_date','event_location',
-  'email','phone1','proposed_price','hear_about_us','referrer','next_action',
+  'name','contact_name','groom_name','bride_name','relation','event_type',
+  'event_date','event_location','email','phone1','phone2','id_number','address',
+  'proposed_price','deposit_amount','package_type','date_status','hear_about_us',
+  'referrer','came_to_see_event','seen_at_date','seen_at_place','next_action','team',
 ];
 
 router.post('/', upload.single('audio'), async (req, res) => {
@@ -53,12 +57,15 @@ router.post('/:id/apply', async (req, res) => {
   const note = await db.get('voice_notes', req.params.id);
   if (!note || !note.extracted) return res.status(404).json({ error: 'ניתוח קולי לא נמצא' });
 
+  // the review form hands back strings ("18,000 ₪", "+972-52…") — clean them the
+  // same way as the model's own output, minus the date guessing
+  const src = ai.normalizeExtracted(req.body?.fields || note.extracted, { dates: false });
   const fields = {};
   for (const k of LEAD_KEYS) {
-    const v = (req.body?.fields || note.extracted)[k];
+    const v = src[k];
     if (v !== undefined && v !== null && v !== '') fields[k] = v;
   }
-  const notes = (req.body?.fields || note.extracted).notes;
+  const notes = src.notes;
 
   let lead;
   const targetId = req.body?.lead_id || note.lead_id;
