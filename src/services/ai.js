@@ -62,8 +62,23 @@ const mimeFor = (originalName, fallback) => {
   return clean.startsWith('audio/') || clean.startsWith('video/') ? clean : 'audio/webm';
 };
 
-async function geminiGenerate(parts, { json = false } = {}) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.gemini.model}:generateContent`;
+// Google retires models from the free tier without renaming them, and such a
+// model answers with "limit: 0" — which looks like an exhausted quota but means
+// "not free any more". Rather than hard-fail on one name, walk a short list and
+// remember whichever works, so a retirement degrades instead of breaking.
+const modelChain = () => {
+  const chain = [config.gemini.model, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest'];
+  return [...new Set(chain.filter(Boolean))];
+};
+let workingModel = null;
+
+// "limit: 0" / 404 mean *this model* is unusable; a real rate-limit (limit > 0)
+// or a bad key must NOT trigger a fallback — retrying would only hide the cause.
+const modelUnavailable = (status, msg) =>
+  status === 404 || (status === 429 && /limit:\s*0\b/.test(msg));
+
+async function callGemini(model, parts, json) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const rsp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.gemini.apiKey },
@@ -75,16 +90,36 @@ async function geminiGenerate(parts, { json = false } = {}) {
     }),
   });
   const data = await rsp.json().catch(() => null);
-  if (!rsp.ok) {
-    // surface Google's own message — "quota exceeded" and "invalid key" need
-    // very different fixes and a generic error hides which one it is
-    const msg = data?.error?.message || `שגיאת Gemini (${rsp.status})`;
-    throw new Error(`Gemini: ${msg}`);
+  return { ok: rsp.ok, status: rsp.status, data, msg: data?.error?.message || '' };
+}
+
+async function geminiGenerate(parts, { json = false } = {}) {
+  const models = workingModel ? [workingModel, ...modelChain()] : modelChain();
+  let last = null;
+
+  for (const model of [...new Set(models)]) {
+    const r = await callGemini(model, parts, json);
+    if (r.ok) {
+      if (workingModel !== model) {
+        workingModel = model;
+        if (model !== config.gemini.model) console.warn(`[ai] Gemini נופל למודל ${model}`);
+      }
+      const text = (r.data?.candidates?.[0]?.content?.parts || [])
+        .map(p => p.text).filter(Boolean).join('').trim();
+      if (!text) throw new Error('Gemini החזיר תשובה ריקה');
+      return text;
+    }
+    last = r;
+    if (workingModel === model) workingModel = null;
+    if (!modelUnavailable(r.status, r.msg)) break;
   }
-  const text = (data?.candidates?.[0]?.content?.parts || [])
-    .map(p => p.text).filter(Boolean).join('').trim();
-  if (!text) throw new Error('Gemini החזיר תשובה ריקה');
-  return text;
+
+  // surface Google's own message — an exhausted quota and an invalid key need
+  // very different fixes, and a generic error hides which one it is
+  if (last && modelUnavailable(last.status, last.msg)) {
+    throw new Error('Gemini: אף מודל זמין בחשבון. בדקו שהמפתח תקין וש-GEMINI_MODEL מצביע על מודל קיים.');
+  }
+  throw new Error(`Gemini: ${last?.msg || `שגיאה (${last?.status})`}`);
 }
 
 // Transcribe only. Kept as its own step so the transcript is stored and shown

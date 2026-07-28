@@ -35,7 +35,10 @@ const config = {
   // OpenAI needs Whisper then GPT. OpenAI stays as a fallback if its key is set.
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY,
-    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    // 2.5 Flash is the current free-tier model. 2.0 Flash was moved to paid-only
+    // and answers free-tier calls with "limit: 0", which reads like a quota
+    // problem but is really "this model has no free tier".
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     enabled: filled(process.env.GEMINI_API_KEY) || filled(process.env.GOOGLE_AI_API_KEY),
   },
   // Microsoft Clarity — free session recordings + heatmaps for the lead forms

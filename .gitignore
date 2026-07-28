@@ -1,21 +1,22 @@
 # dependencies
 node_modules/
-
 # environment
 .env
 .env.local
-
 # local mock database & uploads
 data/
-
 # logs
 npm-debug.log*
 *.log
-
 # OS
 .DS_Store
 Thumbs.db
-
 # editors
 .vscode/
 .idea/
+
+# managed
+**.data.json
+**.node-persist**
+**_IGNORE_**
+# end managed
