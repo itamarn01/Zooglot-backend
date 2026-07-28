@@ -34,7 +34,9 @@ router.post('/', upload.single('audio'), async (req, res) => {
     created_by: req.user.id,
   });
   try {
-    const transcript = await ai.transcribe(req.file.path, req.file.originalname);
+    // pass the browser-reported mime too — a MediaRecorder blob often arrives
+    // with a generic filename and no useful extension
+    const transcript = await ai.transcribe(req.file.path, req.file.originalname, req.file.mimetype);
     note = await db.update('voice_notes', note.id, { transcript, status: 'transcribed' });
     const extracted = await ai.extractLeadFields(transcript);
     note = await db.update('voice_notes', note.id, { extracted, status: 'extracted' });

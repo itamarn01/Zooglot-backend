@@ -43,3 +43,7 @@ alter table lead_forms add column if not exists submit_label text;   -- benefit-
 alter table lead_forms add column if not exists next_label text;     -- "continue →"
 alter table lead_forms add column if not exists privacy_note text;   -- trust microcopy
 alter table lead_forms add column if not exists step_titles jsonb not null default '[]'::jsonb;
+-- per-step "continue" wording, so each step can promise what comes next
+alter table lead_forms add column if not exists step_buttons jsonb not null default '[]'::jsonb;
+-- what the visitor sees after a successful submit
+alter table lead_forms add column if not exists success_text text;

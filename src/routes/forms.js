@@ -19,10 +19,12 @@ const BINDABLE_FIELDS = [
   { key: 'name', label: 'שם מלא / שם האירוע', label_en: 'Full name / event name', type: 'text' },
   { key: 'contact_name', label: 'איש קשר', label_en: 'Contact person', type: 'text' },
   {
+    // rendered as tappable badges rather than a dropdown: one tap instead of
+    // open-scroll-pick, which matters when most visitors are on a phone
     key: 'relation', label: 'קרבה לאירוע', label_en: 'Relation to the event', type: 'select',
     options: ['כלה', 'חתן', 'הורה', 'מפיק/ה', 'אחר'],
     options_en: ['Bride', 'Groom', 'Parent', 'Producer', 'Other'],
-    other_free_text: true,
+    other_free_text: true, badges: true,
   },
   {
     key: 'event_type', label: 'סוג אירוע', label_en: 'Event type', type: 'select',
@@ -36,9 +38,9 @@ const BINDABLE_FIELDS = [
   { key: 'phone1', label: 'טלפון', label_en: 'Phone', type: 'tel' },
   {
     key: 'hear_about_us', label: 'איך שמעתם עלינו?', label_en: 'How did you hear about us?', type: 'select',
-    options: ['Instagram', 'Youtube', 'ניגנתם אצל חברים', 'המלצה', 'גוגל', 'אחר'],
-    options_en: ['Instagram', 'YouTube', 'You played at a friend\'s event', 'Recommendation', 'Google', 'Other'],
-    other_free_text: true,
+    options: ['Instagram', 'Facebook', 'Youtube', 'ניגנתם אצל חברים', 'המלצה', 'גוגל', 'אחר'],
+    options_en: ['Instagram', 'Facebook', 'YouTube', 'You played at a friend\'s event', 'Recommendation', 'Google', 'Other'],
+    other_free_text: true, badges: true,
   },
   {
     key: 'referrer', label: 'מי המליץ?', label_en: 'Who recommended us?', type: 'text',
@@ -89,7 +91,8 @@ authed.get('/', async (req, res) => {
 });
 
 const FORM_FIELDS = ['name', 'intro_html', 'logo_url', 'colors', 'fields', 'language',
-  'active', 'form_type', 'submit_label', 'next_label', 'privacy_note', 'step_titles'];
+  'active', 'form_type', 'submit_label', 'next_label', 'privacy_note', 'step_titles',
+  'step_buttons', 'success_text'];
 
 authed.post('/', async (req, res) => {
   const { name, intro_html, logo_url, colors, fields, language } = req.body || {};
@@ -108,6 +111,8 @@ authed.post('/', async (req, res) => {
     next_label: req.body?.next_label || null,
     privacy_note: req.body?.privacy_note || null,
     step_titles: req.body?.step_titles || [],
+    step_buttons: req.body?.step_buttons || [],
+    success_text: req.body?.success_text || null,
     active: true,
     created_by: req.user.id,
   });
@@ -217,9 +222,12 @@ function enrichFields(fields) {
     // replacing it with the generic default would undo their copy.
     return {
       ...f,
-      options: f.options || def.options,
+      // options come from the definition so a newly added choice (Facebook, say)
+      // reaches forms that were built before it existed
+      options: def.options || f.options,
       options_en: def.options_en,
       other_free_text: def.other_free_text,
+      badges: def.badges,
       show_when: def.show_when,
     };
   });
@@ -231,7 +239,14 @@ const publicRouter = express.Router();
 publicRouter.get('/:slug', async (req, res) => {
   const form = await db.getBy('lead_forms', 'slug', req.params.slug);
   if (!form || !form.active) return res.status(404).json({ error: 'הטופס לא נמצא' });
-  res.json({ form: { ...form, fields: enrichFields(form.fields) } });
+  res.json({
+    form: {
+      ...form,
+      fields: enrichFields(form.fields),
+      // the public page loads Clarity itself; the id is not a secret
+      clarity_project_id: config.clarity.projectId || null,
+    },
+  });
 });
 
 // ---- analytics tracking (public, unauthenticated) ----
@@ -302,7 +317,8 @@ publicRouter.post('/:slug/submit', async (req, res) => {
     }
   } catch { /* never fail a real submission over analytics */ }
 
-  res.status(201).json({ ok: true, message: form.language === 'en' ? 'Thank you! We will be in touch soon.' : 'תודה! ניצור קשר בהקדם.' });
+  const fallback = form.language === 'en' ? 'Thank you! We will be in touch soon.' : 'תודה! ניצור קשר בהקדם.';
+  res.status(201).json({ ok: true, message: (form.success_text || '').trim() || fallback });
 });
 
 module.exports = { authed, publicRouter, createLeadFromPayload, BINDABLE_FIELDS };

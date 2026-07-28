@@ -30,6 +30,26 @@ const config = {
     extractModel: process.env.OPENAI_EXTRACT_MODEL || 'gpt-4o-mini',
     enabled: filled(process.env.OPENAI_API_KEY),
   },
+  // Gemini is the default voice engine: the free tier needs no credit card, and
+  // Flash understands audio directly — one call transcribes AND extracts, where
+  // OpenAI needs Whisper then GPT. OpenAI stays as a fallback if its key is set.
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY,
+    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    enabled: filled(process.env.GEMINI_API_KEY) || filled(process.env.GOOGLE_AI_API_KEY),
+  },
+  // Microsoft Clarity — free session recordings + heatmaps for the lead forms
+  clarity: {
+    projectId: process.env.CLARITY_PROJECT_ID || '',
+    enabled: filled(process.env.CLARITY_PROJECT_ID),
+  },
+  // Instagram / Facebook Messenger → leads
+  instagram: {
+    verifyToken: process.env.META_VERIFY_TOKEN || 'zooglot-verify',
+    appSecret: process.env.META_APP_SECRET || '',
+    pageToken: process.env.META_PAGE_TOKEN || '',
+    enabled: filled(process.env.META_PAGE_TOKEN),
+  },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,

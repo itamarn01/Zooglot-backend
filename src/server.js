@@ -17,7 +17,12 @@ const app = express();
 // board and a slow one on a phone connection.
 app.use(compression());
 app.use(cors());
-app.use(express.json({ limit: '15mb' })); // signatures/avatars arrive as data URLs
+// Keep the raw body: Meta signs its webhook deliveries over the exact bytes
+// sent, so the signature cannot be verified from the parsed object.
+app.use(express.json({
+  limit: '15mb', // signatures/avatars arrive as data URLs
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 
 // ---- API ----
 app.use('/api/auth', require('./routes/auth'));
@@ -30,6 +35,7 @@ app.use('/api/portal', require('./routes/contracts').portal);
 app.use('/api/forms', require('./routes/forms').authed);
 app.use('/api/public/forms', require('./routes/forms').publicRouter);
 app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/instagram', require('./routes/instagram'));
 app.use('/api/voice', require('./routes/voice'));
 app.use('/api/calendar', require('./routes/calendar'));
 app.use('/api/dashboard', require('./routes/dashboard'));
