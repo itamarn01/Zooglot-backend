@@ -244,15 +244,28 @@ router.post('/leads', async (req, res) => {
     if (!s) return null;
     return profiles.find(p => norm(p.full_name) === s || norm(p.email) === s || norm(p.email).split('@')[0] === s) || null;
   };
-  const existing = await db.list('leads', {});
-  const findMatch = (val) => {
-    const s = norm(val);
-    if (!s) return null;
-    return existing.find(l => norm(l[match_field]) === s) || null;
-  };
+  // Only fetch the existing board when we actually have to compare against it.
+  // "add" never looks at it, and pulling thousands of full rows for every chunk
+  // of a large import is pure waste.
+  const existing = match_strategy === 'add'
+    ? []
+    : await db.list('leads', { columns: `id,${match_field}` });
+  const byMatch = new Map();
+  for (const l of existing) {
+    const s = norm(l[match_field]);
+    if (s && !byMatch.has(s)) byMatch.set(s, l); // first wins, as find() did
+  }
+  const findMatch = (val) => byMatch.get(norm(val)) || null;
 
   let created = 0, updated = 0, skipped = 0, failed = 0;
   const errors = []; // up to 20 concrete reasons, so failures are never a silent count
+  const fail = (i, name, reason) => {
+    failed++;
+    if (errors.length < 20) errors.push({ row: i + 1, ...(name ? { name } : {}), reason });
+  };
+
+  // Pass 1: map and classify every row without touching the database.
+  const toInsert = []; // { i, data, notes }
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const data = {};
@@ -264,42 +277,80 @@ router.post('/leads', async (req, res) => {
       if (key === 'notes') { notes = row[col]; continue; }
       data[key] = val;
     }
-    if (!data.name) {
-      failed++;
-      if (errors.length < 20) errors.push({ row: i + 1, reason: 'שדה "שם" ריק אחרי המיפוי' });
+    if (!data.name) { fail(i, null, 'שדה "שם" ריק אחרי המיפוי'); continue; }
+
+    const match = (match_strategy !== 'add') ? findMatch(data[match_field]) : null;
+    if (match && match_strategy === 'skip') { skipped++; continue; }
+
+    if (match && match_strategy === 'update') {
+      try {
+        const lead = await db.update('leads', match.id, { ...data, updated_at: new Date().toISOString() });
+        updated++;
+        if (notes && String(notes).trim()) await addNote(lead.id, notes, req.user.id);
+      } catch (e) { fail(i, data.name, e.message || 'שגיאה לא ידועה'); }
       continue;
     }
+    toInsert.push({ i, data, notes });
+  }
 
+  // Pass 2: insert the new leads in batches. One round trip per batch instead
+  // of one per row is the difference between seconds and minutes — the old
+  // version ran long enough that the request timed out mid-import.
+  const build = ({ data }) => ({
+    sale_status: defaultStatus, source: 'import', stage: 'לקוח חדש ידני',
+    next_action: 'עוד פרטים', event_type: 'חתונה',
+    ...data,
+    created_by: req.user.id,
+  });
+  const notesToAdd = [];
+  // Matches the driver's own batch size, so a chunk this size is one round trip
+  // rather than being split twice. It also bounds the retry cost: when a batch
+  // is rejected we re-send it row by row to find the culprit.
+  const BATCH = 500;
+  for (let s = 0; s < toInsert.length; s += BATCH) {
+    const slice = toInsert.slice(s, s + BATCH);
     try {
-      const match = (match_strategy !== 'add') ? findMatch(data[match_field]) : null;
-      if (match && match_strategy === 'skip') { skipped++; continue; }
-
-      let lead;
-      if (match && match_strategy === 'update') {
-        lead = await db.update('leads', match.id, { ...data, updated_at: new Date().toISOString() });
-        updated++;
-      } else {
-        lead = await db.insert('leads', {
-          sale_status: defaultStatus, source: 'import', stage: 'לקוח חדש ידני',
-          next_action: 'עוד פרטים', event_type: 'חתונה',
-          ...data,
-          created_by: req.user.id,
-        });
-        created++;
+      const saved = await db.insertMany('leads', slice.map(build));
+      created += saved.length;
+      // insert() returns rows in the order they were sent, so this pairs up
+      slice.forEach((item, k) => {
+        if (item.notes && String(item.notes).trim() && saved[k]) {
+          notesToAdd.push({ lead_id: saved[k].id, notes: item.notes });
+        }
+      });
+    } catch {
+      // One bad row rejects the whole batch, and a batch-level error cannot say
+      // WHICH row. Retry the batch one at a time so the report names the row
+      // that actually failed rather than blaming 200 good ones.
+      for (const item of slice) {
+        try {
+          const lead = await db.insert('leads', build(item));
+          created++;
+          if (item.notes && String(item.notes).trim()) notesToAdd.push({ lead_id: lead.id, notes: item.notes });
+        } catch (e) {
+          fail(item.i, item.data.name, e.message || 'שגיאה לא ידועה');
+        }
       }
-      if (notes && String(notes).trim()) {
-        await db.insert('lead_updates', {
-          lead_id: lead.id, author_id: req.user.id, kind: 'system',
-          body: `📥 יובא מאקסל: ${String(notes).trim()}`,
-        });
-      }
-    } catch (e) {
-      failed++;
-      if (errors.length < 20) errors.push({ row: i + 1, name: data.name, reason: e.message || 'שגיאה לא ידועה' });
     }
   }
+
+  if (notesToAdd.length) {
+    const bodies = notesToAdd.map(n => ({
+      lead_id: n.lead_id, author_id: req.user.id, kind: 'system',
+      body: `📥 יובא מאקסל: ${String(n.notes).trim()}`,
+    }));
+    try { await db.insertMany('lead_updates', bodies); } catch { /* notes are not worth failing the import */ }
+  }
+
   res.json({ created, updated, skipped, failed, total: rows.length, errors });
 });
+
+async function addNote(leadId, notes, authorId) {
+  await db.insert('lead_updates', {
+    lead_id: leadId, author_id: authorId, kind: 'system',
+    body: `📥 יובא מאקסל: ${String(notes).trim()}`,
+  });
+}
 
 // ---- import a Monday "Updates" export into lead update threads ----
 // body: { rows, mapping: { match:'colName', content:'colName', author?:'colName', date?:'colName' },

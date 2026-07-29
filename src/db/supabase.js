@@ -91,6 +91,30 @@ module.exports = {
     return data;
   },
 
+  // One round trip per batch instead of one per row. An Excel import of 5,000
+  // leads was 5,000 sequential inserts, which took minutes and timed out the
+  // request long before it finished.
+  async insertMany(name, rows) {
+    if (!rows.length) return [];
+    const out = [];
+    const CHUNK = 500; // keeps each statement well inside PostgREST's limits
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const { data, error } = await client.from(name).insert(rows.slice(i, i + CHUNK)).select();
+      throwIf(error);
+      out.push(...(data || []));
+    }
+    return out;
+  },
+
+  // Bulk delete by column value — used to empty a whole pipeline. Returns the
+  // number of rows actually removed so the caller can report it honestly.
+  async removeWhere(name, col, val) {
+    const q = client.from(name).delete({ count: 'exact' });
+    const { count, error } = await (Array.isArray(val) ? q.in(col, val) : q.eq(col, val));
+    throwIf(error);
+    return count || 0;
+  },
+
   async update(name, id, patch) {
     const { data, error } = await client.from(name).update(patch).eq('id', id).select().maybeSingle();
     throwIf(error);

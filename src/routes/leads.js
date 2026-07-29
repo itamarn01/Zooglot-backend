@@ -2,7 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { todayISO } = require('../lib/dates');
 const whatsapp = require('../services/whatsapp');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -261,6 +261,57 @@ router.delete('/:id/reminders/:reminderId', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Every table that carries a lead_id. Anything left off this list is either
+// destroyed (reminders / calendar_events cascade) or orphaned
+// (whatsapp_messages / voice_notes / form_submissions are set null) whenever a
+// lead is merged or purged. Keep it in step with the schema.
+const CHILD_TABLES = [
+  'lead_contacts', 'lead_updates', 'contracts', 'reminders',
+  'calendar_events', 'whatsapp_messages', 'voice_notes', 'form_submissions',
+];
+
+// ---- empty a whole pipeline ----
+// Deliberately hostile to accidents: admin only, and the caller must send the
+// row count it just saw. If the real count differs — someone else added leads,
+// or the screen was stale — nothing is deleted. That is the exact failure mode
+// that turns "delete the 5,100 LOST rows" into "delete rows I never looked at".
+router.post('/purge', requireAdmin, async (req, res) => {
+  const scope = req.body?.sale_status;
+  if (!['open', 'win', 'lost', 'all'].includes(scope)) {
+    return res.status(400).json({ error: 'יש לבחור צינור למחיקה' });
+  }
+  const filters = scope === 'all' ? {} : { sale_status: scope };
+  const victims = await db.list('leads', { filters, columns: 'id' });
+  const ids = victims.map(l => l.id);
+
+  const expected = Number(req.body?.confirm_count);
+  if (!Number.isInteger(expected) || expected !== ids.length) {
+    return res.status(409).json({
+      error: `המספר לא תואם: במערכת יש ${ids.length} רשומות ולא ${req.body?.confirm_count}. רעננו ונסו שוב.`,
+      actual: ids.length,
+    });
+  }
+  if (!ids.length) return res.json({ deleted: 0, children: {} });
+
+  // children first, in id batches — a single .in() with thousands of UUIDs
+  // makes a URL no proxy will accept
+  const BATCH = 200;
+  const children = {};
+  for (const t of CHILD_TABLES) {
+    let n = 0;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      n += await db.removeWhere(t, 'lead_id', ids.slice(i, i + BATCH));
+    }
+    if (n) children[t] = n;
+  }
+  let deleted = 0;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    deleted += await db.removeWhere('leads', 'id', ids.slice(i, i + BATCH));
+  }
+  console.warn(`[purge] ${req.user.email} deleted ${deleted} leads (${scope})`);
+  res.json({ deleted, children, scope });
+});
+
 // ---- merge duplicates ----
 // body: { primary_id, duplicate_id, resolutions: { field: chosenValue } }
 router.post('/merge', async (req, res) => {
@@ -283,15 +334,7 @@ router.post('/merge', async (req, res) => {
   const err = lostGuard(primary, patch);
   if (err) return res.status(400).json({ error: err });
 
-  // Move EVERY child row before the duplicate is deleted. Anything left behind
-  // is destroyed (reminders / calendar_events cascade) or orphaned
-  // (whatsapp_messages / voice_notes / form_submissions are set null) — losing
-  // reminders and whole WhatsApp threads. Keep this list in step with every
-  // table that carries a lead_id.
-  const CHILD_TABLES = [
-    'lead_contacts', 'lead_updates', 'contracts', 'reminders',
-    'calendar_events', 'whatsapp_messages', 'voice_notes', 'form_submissions',
-  ];
+  // Move EVERY child row before the duplicate is deleted (see CHILD_TABLES).
   const moved = {};
   for (const t of CHILD_TABLES) {
     const rows = await db.list(t, { filters: { lead_id: dup.id } });

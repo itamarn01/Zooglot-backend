@@ -129,6 +129,14 @@ function table(name) {
   return s[name];
 }
 
+const STAMPED = ['leads', 'products', 'packages', 'contracts', 'profiles'];
+function insertRow(name, row) {
+  const rec = { id: uuid(), created_at: now(), ...row };
+  if (STAMPED.includes(name)) rec.updated_at = rec.updated_at || now();
+  table(name).push(rec);
+  return rec;
+}
+
 module.exports = {
   isMock: true,
 
@@ -172,13 +180,35 @@ module.exports = {
   },
 
   async insert(name, row) {
-    const rec = { id: uuid(), created_at: now(), ...row };
-    if (['leads', 'products', 'packages', 'contracts', 'profiles'].includes(name)) {
-      rec.updated_at = rec.updated_at || now();
-    }
-    table(name).push(rec);
+    const rec = insertRow(name, row);
     persist();
     return rec;
+  },
+
+  // Writes directly rather than looping over this.insert: going back through the
+  // public method makes one logical batch look like N separate calls to anything
+  // observing the driver, and quietly depends on `this` staying bound.
+  async insertMany(name, rows) {
+    const out = rows.map(row => insertRow(name, row));
+    if (out.length) persist();
+    return out;
+  },
+
+  async removeWhere(name, col, val) {
+    const s = load();
+    const keep = [], gone = [];
+    const hit = r => (Array.isArray(val) ? val.includes(r[col]) : r[col] === val);
+    for (const r of (s[name] || [])) (hit(r) ? gone : keep).push(r);
+    s[name] = keep;
+    // mirror the single-row cascade so mock and Supabase agree
+    if (name === 'leads' && gone.length) {
+      const ids = new Set(gone.map(r => r.id));
+      for (const child of ['lead_contacts', 'lead_updates', 'calendar_events']) {
+        s[child] = (s[child] || []).filter(r => !ids.has(r.lead_id));
+      }
+    }
+    persist();
+    return gone.length;
   },
 
   async update(name, id, patch) {
