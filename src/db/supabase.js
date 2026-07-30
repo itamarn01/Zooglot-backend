@@ -46,17 +46,38 @@ module.exports = {
     // an explicit order keeps paging stable; without one PostgREST may return
     // rows in a different order per page and we'd both duplicate and miss rows
     const PAGE = 1000;
-    const out = [];
-    for (let from = 0; ; from += PAGE) {
+    const fetchPage = async (from) => {
       let q = build();
       if (!opts.orderBy) q = q.order('id', { ascending: true });
       const { data, error } = await q.range(from, from + PAGE - 1);
       throwIf(error);
-      const page = data || [];
-      out.push(...page);
-      if (page.length < PAGE) break;
-      // hard stop so a runaway table can never spin forever
-      if (out.length >= 100000) break;
+      return data || [];
+    };
+
+    const first = await fetchPage(0);
+    if (first.length < PAGE) return first;
+
+    // Past the first page, ask how many rows there are and fetch the remaining
+    // pages at once. Waiting for page N to know whether to request page N+1 made
+    // a 5,000-row board six sequential Railway→Supabase round trips — the bulk of
+    // the wait on opening the app. The count is a head request: no rows move.
+    const total = Math.min(await this.count(name, opts.filters || {}), 100000);
+    const pages = Math.ceil(total / PAGE);
+    const rest = await Promise.all(
+      Array.from({ length: Math.max(0, pages - 1) }, (_, i) => fetchPage((i + 1) * PAGE)));
+
+    const out = first;
+    for (const p of rest) out.push(...p);
+
+    // The table can grow between the count and the reads. Rather than silently
+    // return a short list — the exact bug this paging exists to prevent — walk
+    // any remainder the old way.
+    if (out.length >= pages * PAGE) {
+      for (let from = pages * PAGE; ; from += PAGE) {
+        const page = await fetchPage(from);
+        out.push(...page);
+        if (page.length < PAGE || out.length >= 100000) break;
+      }
     }
     return out;
   },

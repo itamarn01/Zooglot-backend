@@ -6,6 +6,7 @@ const express = require('express');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('../db');
+const { broadcast } = require('../lib/events');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -343,6 +344,16 @@ router.post('/leads', async (req, res) => {
   }
 
   res.json({ created, updated, skipped, failed, total: rows.length, errors });
+  // one event per chunk, so the other browsers offer a refresh rather than
+  // re-downloading the board 17 times during a large import
+  if (created || updated) {
+    try {
+      broadcast('lead', 'bulk', {
+        count: created + updated, reason: 'import',
+        by: req.user?.id, by_name: req.user?.full_name || req.user?.email || '',
+      });
+    } catch { /* never fail an import over the feed */ }
+  }
 });
 
 async function addNote(leadId, notes, authorId) {

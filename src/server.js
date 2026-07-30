@@ -15,7 +15,12 @@ const app = express();
 // The board ships every lead in one response — several MB once the history from
 // Monday is in. JSON gzips ~10:1, so this is the difference between a snappy
 // board and a slow one on a phone connection.
-app.use(compression());
+// Never compress the SSE stream: compression buffers until it has enough bytes,
+// which turns a live feed into one that delivers nothing until it is closed.
+app.use(compression({
+  filter: (req, res) =>
+    res.getHeader('Content-Type') !== 'text/event-stream' && compression.filter(req, res),
+}));
 app.use(cors());
 // Keep the raw body: Meta signs its webhook deliveries over the exact bytes
 // sent, so the signature cannot be verified from the parsed object.
@@ -40,6 +45,7 @@ app.use('/api/voice', require('./routes/voice'));
 app.use('/api/calendar', require('./routes/calendar'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/settings', require('./routes/settings'));
+app.use('/api/events', require('./routes/events'));
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'Zooglot.DB', mock_db: config.mockDb,

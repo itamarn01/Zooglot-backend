@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { todayISO } = require('../lib/dates');
 const whatsapp = require('../services/whatsapp');
+const { broadcast } = require('../lib/events');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -91,6 +92,7 @@ router.post('/', async (req, res) => {
     created_by: req.user.id,
   });
   res.status(201).json({ lead });
+  notify(req, 'created', { lead });
 });
 
 // ---- inline update (autosave) ----
@@ -116,11 +118,14 @@ router.patch('/:id', async (req, res) => {
     });
   }
   res.json({ lead });
+  // after the response: a slow or broken listener must never delay the save
+  notify(req, 'updated', { lead });
 });
 
 router.delete('/:id', async (req, res) => {
   await db.remove('leads', req.params.id);
   res.json({ ok: true });
+  notify(req, 'deleted', { id: req.params.id });
 });
 
 // ---- contacts (אנשי קשר נוספים) ----
@@ -261,6 +266,18 @@ router.delete('/:id/reminders/:reminderId', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Tell every other open browser what just changed. `by` is the author, so a
+// client can ignore the echo of its own edit instead of fighting itself.
+function notify(req, action, payload) {
+  try {
+    broadcast('lead', action, {
+      ...payload,
+      by: req.user?.id,
+      by_name: req.user?.full_name || req.user?.email || '',
+    });
+  } catch { /* the feed is a convenience; it must never break a write */ }
+}
+
 // Every table that carries a lead_id. Anything left off this list is either
 // destroyed (reminders / calendar_events cascade) or orphaned
 // (whatsapp_messages / voice_notes / form_submissions are set null) whenever a
@@ -310,6 +327,7 @@ router.post('/purge', requireAdmin, async (req, res) => {
   }
   console.warn(`[purge] ${req.user.email} deleted ${deleted} leads (${scope})`);
   res.json({ deleted, children, scope });
+  notify(req, 'bulk', { count: deleted, reason: 'purge' });
 });
 
 // ---- merge duplicates ----
@@ -353,6 +371,7 @@ router.post('/merge', async (req, res) => {
         : ''),
   });
   res.json({ lead, moved });
+  notify(req, 'bulk', { count: 1, reason: 'merge' });
 });
 
 // ---- competitors dropdown ----
