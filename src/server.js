@@ -46,6 +46,8 @@ app.use('/api/calendar', require('./routes/calendar'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/events', require('./routes/events'));
+app.use('/api/places', require('./routes/places').authed);
+app.use('/api/public/places', require('./routes/places').publicRouter);
 
 app.get('/api/health', (req, res) => res.json({
   ok: true, app: 'Zooglot.DB', mock_db: config.mockDb,
