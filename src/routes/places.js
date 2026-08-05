@@ -55,13 +55,20 @@ function cacheSet(key, value) {
 // ---- formatting -------------------------------------------------------------
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+// Returns the two halves separately as well as joined: the field stores one
+// string, but a suggestion reads far better as a venue with its town underneath
+// than as one long comma-run — which is how every maps picker shows it.
 function labelOf(p) {
   const where = [p.city || p.district, p.state, p.countrycode === 'IL' ? null : p.country]
     .filter(Boolean);
   // drop a "city" that just repeats the name ("תל אביב" in "תל אביב")
   const name = p.name || [p.street, p.housenumber].filter(Boolean).join(' ');
-  const tail = where.filter(w => norm(w) !== norm(name));
-  return [name, ...tail.slice(0, 2)].filter(Boolean).join(', ');
+  const tail = where.filter(w => norm(w) !== norm(name)).slice(0, 2);
+  return {
+    label: [name, ...tail].filter(Boolean).join(', '),
+    title: name || tail[0] || '',
+    where: tail.join(', '),
+  };
 }
 
 async function searchPhoton(q, signal) {
@@ -78,14 +85,14 @@ async function searchPhoton(q, signal) {
   for (const f of (data.features || [])) {
     const p = f.properties || {};
     if (!p.name && !p.street) continue;
-    const label = labelOf(p);
+    const { label, title, where } = labelOf(p);
     const key = norm(label);
     // the same venue comes back under several OSM tags — keep the most
     // venue-like one rather than whichever happened to be first
     const prev = seen.get(key);
     if (prev && rankOf(prev.raw) <= rankOf(p)) continue;
     seen.set(key, {
-      label,
+      label, title, where,
       country: p.countrycode || null,
       kind: `${p.osm_key}:${p.osm_value}`,
       lat: f.geometry?.coordinates?.[1] ?? null,
@@ -137,7 +144,13 @@ async function suggest(q, { includeHistory }) {
     const needle = norm(query);
     for (const v of await venueHistory()) {
       if (!norm(v.label).includes(needle)) continue;
-      push({ label: v.label, source: 'history', used: v.n });
+      // a stored venue is one free-text string; split it the same way so the
+      // two lists read alike
+      const [head, ...rest] = v.label.split(',');
+      push({
+        label: v.label, title: head.trim(), where: rest.join(',').trim(),
+        source: 'history', used: v.n,
+      });
       if (out.length >= 5) break; // leave room for real geocoder results
     }
   }
