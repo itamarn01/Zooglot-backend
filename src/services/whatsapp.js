@@ -109,6 +109,40 @@ function extractText(msg) {
     || '';
 }
 
+// What a message WITHOUT text is. The media itself is deliberately not fetched
+// or stored — a CRM thread is for what was said and agreed, and pulling every
+// voice note and photo into it turns the record into a media library the team
+// then has to manage (and pay to store). The line in the thread says something
+// arrived and on which conversation; the phone still has the original.
+const MEDIA_LABELS = [
+  ['audioMessage', '🎤 הודעה קולית'],
+  ['imageMessage', '🖼️ תמונה'],
+  ['videoMessage', '🎥 סרטון'],
+  ['stickerMessage', '🔖 מדבקה'],
+  ['documentMessage', '📎 קובץ'],
+  ['locationMessage', '📍 מיקום'],
+  ['liveLocationMessage', '📍 מיקום חי'],
+  ['contactMessage', '👤 איש קשר'],
+  ['contactsArrayMessage', '👤 אנשי קשר'],
+  ['pollCreationMessage', '📊 סקר'],
+];
+
+function describeMedia(msg) {
+  if (!msg) return '';
+  const inner = msg.ephemeralMessage?.message
+    || msg.viewOnceMessage?.message
+    || msg.viewOnceMessageV2?.message
+    || msg.documentWithCaptionMessage?.message
+    || msg;
+  for (const [key, label] of MEDIA_LABELS) {
+    if (!inner[key]) continue;
+    // a voice note and an audio file are both audioMessage; only the first is ptt
+    if (key === 'audioMessage' && !inner[key].ptt) return '🎵 קובץ שמע';
+    return label;
+  }
+  return '';
+}
+
 // a phone-number JID looks like 9725...@s.whatsapp.net; a @lid is WhatsApp's
 // privacy identifier and is NOT a phone number
 function pnFromJid(jid) {
@@ -144,7 +178,11 @@ async function handleIncoming(m) {
   if (/@(g\.us|newsletter|broadcast)$/.test(remoteJid) || remoteJid === 'status@broadcast') return;
   if (!remoteJid) return;
 
-  const body = extractText(m.message).trim();
+  // A media message with no caption used to be dropped, so the thread showed a
+  // gap where the customer had actually sent something. Note that it arrived.
+  const text = extractText(m.message).trim();
+  const media = text ? '' : describeMedia(m.message);
+  const body = text || media;
   if (!body) return;
 
   const waId = m.key.id || null;
@@ -361,10 +399,13 @@ async function sendToNumber(phone, text) {
 // send to a lead: reply straight to the stored WhatsApp chat id (works for both
 // @s.whatsapp.net and @lid chats), falling back to the phone number.
 // Returns { jid, id } — id lets the caller dedupe the echo Baileys emits.
-async function sendToLead(lead, text) {
+// `to` overrides the lead's own chat: a lead can hold several conversations
+// once other people (the groom, a parent) have been absorbed into it as
+// contacts, and the reply has to go back to the thread being read.
+async function sendToLead(lead, text, to = null) {
   if (!sock || !state.connected) throw new Error('וואטסאפ אינו מחובר — יש לחבר מ"הגדרות"');
-  const ref = lead.source_ref || '';
-  const jid = /@(s\.whatsapp\.net|lid)$/.test(ref) ? ref : toJid(lead.phone1);
+  const ref = to || lead.source_ref || '';
+  const jid = /@(s\.whatsapp\.net|lid)$/.test(ref) ? ref : toJid(ref || lead.phone1);
   const sent = await sock.sendMessage(jid, { text });
   return { jid, id: sent?.key?.id || null };
 }

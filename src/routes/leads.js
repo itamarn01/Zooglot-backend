@@ -188,11 +188,14 @@ router.post('/:id/messages', async (req, res) => {
   if (!lead) return res.status(404).json({ error: 'ליד לא נמצא' });
   const body = (req.body?.body || '').trim();
   if (!body) return res.status(400).json({ error: 'הודעה ריקה' });
-  if (!lead.phone1 && !(lead.source_ref || '').includes('@')) {
+  // A lead can hold more than one conversation once other people have been
+  // absorbed into it as contacts; the reply belongs to the thread being read.
+  const to = (req.body?.to || '').trim() || null;
+  if (!to && !lead.phone1 && !(lead.source_ref || '').includes('@')) {
     return res.status(400).json({ error: 'אין מספר טלפון לליד' });
   }
   let sent;
-  try { sent = await whatsapp.sendToLead(lead, body); }
+  try { sent = await whatsapp.sendToLead(lead, body, to); }
   catch (e) { return res.status(400).json({ error: e.message }); }
 
   // Baileys also echoes our own send back via messages.upsert (fromMe) — store
@@ -372,6 +375,67 @@ router.post('/merge', async (req, res) => {
   });
   res.json({ lead, moved });
   notify(req, 'bulk', { count: 1, reason: 'merge' });
+});
+
+// ---- absorb a lead into another one as an extra contact ----
+// The bride, the groom and the groom's father each write in separately, so one
+// wedding arrives as three leads. A merge would flatten them into a single
+// record and lose who is who; this keeps the second record's identity as a
+// contact of the first, and brings its WhatsApp conversation along with it.
+router.post('/:id/absorb', async (req, res) => {
+  const sourceId = req.body?.lead_id;
+  if (!sourceId || sourceId === req.params.id) {
+    return res.status(400).json({ error: 'יש לבחור ליד אחר לצירוף' });
+  }
+  const [target, source] = await Promise.all([
+    db.get('leads', req.params.id), db.get('leads', sourceId),
+  ]);
+  if (!target || !source) return res.status(404).json({ error: 'אחד הלידים לא נמצא' });
+
+  const contact = await db.insert('lead_contacts', {
+    lead_id: target.id,
+    name: source.contact_name || source.name,
+    role: (req.body?.role || '').trim() || source.relation || null,
+    phone: source.phone1 || source.phone2 || null,
+    email: source.email || null,
+    id_number: source.id_number || null,
+    address: source.address || null,
+  });
+
+  // Everything the absorbed record accumulated moves across — including its
+  // WhatsApp messages, which keep their own wa_chat_id and so stay readable as
+  // a separate conversation rather than being interleaved into one thread.
+  const moved = {};
+  for (const t of CHILD_TABLES) {
+    const rows = await db.list(t, { filters: { lead_id: source.id } });
+    if (!rows.length) continue;
+    await Promise.all(rows.map(r => db.update(t, r.id, { lead_id: target.id })));
+    moved[t] = rows.length;
+  }
+
+  // only blanks — the surviving lead's own answers are never overwritten by a
+  // record that was demoted to a contact
+  const patch = {};
+  for (const f of LEAD_FIELDS) {
+    const cur = target[f];
+    if ((cur === null || cur === undefined || cur === '') && source[f] != null && source[f] !== '') {
+      patch[f] = source[f];
+    }
+  }
+  // identity fields belong to the contact now, not to the surviving lead
+  for (const f of ['name', 'contact_name', 'sale_status', 'source', 'source_ref']) delete patch[f];
+
+  const lead = Object.keys(patch).length ? await db.update('leads', target.id, patch) : target;
+  await db.remove('leads', source.id);
+  await db.insert('lead_updates', {
+    lead_id: target.id, author_id: req.user.id, kind: 'system',
+    body: `👥 הליד "${source.name}" צורף כאיש קשר (${contact.name}${contact.role ? ` · ${contact.role}` : ''})`
+      + (Object.keys(moved).length
+        ? ` · הועברו: ${Object.entries(moved).map(([t, n]) => `${CHILD_LABELS[t] || t} ${n}`).join(', ')}`
+        : ''),
+  });
+  res.status(201).json({ lead, contact, moved });
+  notify(req, 'bulk', { count: 1, reason: 'absorb' });
 });
 
 // ---- competitors dropdown ----
